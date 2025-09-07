@@ -1,0 +1,120 @@
+name: Foreclosure Sales Scraper
+
+on:
+  # Run automatically every day at 6:00 AM EST (11:00 AM UTC)
+  schedule:
+    - cron: '0 11 * * *'
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Enable debug logging'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  # Environment variables (secrets will be set in GitHub)
+  SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+  GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+  
+jobs:
+  scrape-foreclosures:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Install Playwright browsers
+      run: |
+        playwright install chromium
+        playwright install-deps
+        
+    - name: Verify environment variables
+      run: |
+        if [ -z "${{ secrets.SPREADSHEET_ID }}" ]; then
+          echo "❌ SPREADSHEET_ID secret is not set"
+          exit 1
+        fi
+        if [ -z "${{ secrets.GOOGLE_CREDENTIALS }}" ]; then
+          echo "❌ GOOGLE_CREDENTIALS secret is not set"
+          exit 1
+        fi
+        echo "✅ Required secrets are configured"
+        
+    - name: Run foreclosure scraper
+      run: |
+        echo "🚀 Starting foreclosure sales scraper..."
+        echo "📅 Current time: $(date)"
+        
+        if [ "${{ inputs.debug_mode }}" = "true" ]; then
+          echo "🐛 Debug mode enabled"
+          python -u main.py
+        else
+          python main.py
+        fi
+        
+        echo "✅ Scraper completed successfully"
+        
+    - name: Upload logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: scraper-logs-${{ github.run_number }}
+        path: |
+          *.log
+          screenshots/
+        retention-days: 7
+        
+    - name: Notify on failure (optional)
+      if: failure()
+      run: |
+        echo "❌ Scraper failed. Check the logs for details."
+        echo "Run ID: ${{ github.run_id }}"
+        echo "Run Number: ${{ github.run_number }}"
+
+# Optional: Add a second job for different schedule or configuration
+  scrape-foreclosures-evening:
+    runs-on: ubuntu-latest
+    # Run at 6:00 PM EST (11:00 PM UTC) - uncomment if needed
+    # schedule:
+    #   - cron: '0 23 * * *'
+    if: false  # Disabled by default, set to true to enable evening runs
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        playwright install chromium
+        playwright install-deps
+        
+    - name: Run evening scraper
+      env:
+        SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      run: |
+        echo "🌙 Running evening foreclosure scraper..."
+        python main.py

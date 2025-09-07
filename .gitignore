@@ -1,25 +1,32 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
 env/
 venv/
-.env
-.venv
-pip-log.txt
-pip-delete-this-directory.txt
-.tox
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
+.venv/
+
+# Credentials (never commit these!)
+*.json
+credentials.json
+service_account.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
 *.log
-.git
-.mypy_cache
-.pytest_cache
-.hypothesis
-carbide-nation-463909-p7-6b891ba0da43.json
-foreclosure_sales.csv
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright
+test-results/
+playwright-report/

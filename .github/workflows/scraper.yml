@@ -28,13 +28,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --no-cache-dir -r requirements.txt
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --no-cache-dir -r requirements.txt
 
       - name: Run credential test
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: python test_google_auth.py
+        run: python3 test_google_auth.py
 
   scrape_foreclosures:
     runs-on: ubuntu-latest
@@ -55,7 +56,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --no-cache-dir -r requirements.txt
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --no-cache-dir -r requirements.txt
 
       - name: Run foreclosure scraper
         env:
@@ -64,7 +66,7 @@ jobs:
           POLITE_DELAY_SECONDS: ${{ vars.POLITE_DELAY_SECONDS }}
         run: |
           echo "▶ Running foreclosure scraper..."
-          python main.py
+          python3 main.py
 
       - name: Retry on failure
         if: failure()
@@ -74,4 +76,4 @@ jobs:
         run: |
           echo "⚠ First attempt failed, retrying in 60s..."
           sleep 60
-          python main.py
+          python3 main.py

@@ -2,10 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Google Sheets helpers:
-- 30-day rolling window utilities
-- Snapshot writing
-- New-row highlighting (green)
-- Safe credentials loading
+- 30-day rolling window
+- Highlight new rows (compared to previous snapshot)
+- Formatting (bold headers, freeze header row, auto-resize, green highlights)
 """
 
 import os
@@ -14,30 +13,20 @@ from datetime import datetime, timedelta
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-WINDOW_DAYS = 30
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-
 # -----------------------------
-# Date utilities
+# Date Utilities
 # -----------------------------
-def today_dt():
-    return datetime.now()
-
-def today_str(fmt="%Y-%m-%d"):
-    return today_dt().strftime(fmt)
+def today_str():
+    return datetime.now().strftime("%Y-%m-%d")
 
 def parse_date(date_str):
-    if not date_str or not isinstance(date_str, str):
+    if not date_str:
         return None
     fmts = [
-        "%m/%d/%Y %I:%M %p",
-        "%m/%d/%Y %H:%M",
-        "%m/%d/%Y",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d",
-        "%m-%d-%Y",
-        "%d/%m/%Y",
+        "%m/%d/%Y %I:%M %p", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d", "%m-%d-%Y", "%d/%m/%Y"
     ]
     for f in fmts:
         try:
@@ -46,57 +35,45 @@ def parse_date(date_str):
             continue
     return None
 
-def window_range(today=None):
-    t = today or today_dt()
-    start = t
-    end = t + timedelta(days=WINDOW_DAYS - 1)  # inclusive window of WINDOW_DAYS
-    return start, end
-
 def is_within_30_days(date_str, today=None):
+    today = today or datetime.now()
     dt = parse_date(date_str)
     if not dt:
         return False
-    start, end = window_range(today)
-    return start.date() <= dt.date() <= end.date()
-
+    # Next 30 days inclusive
+    return today.date() <= dt.date() <= (today + timedelta(days=29)).date()
 
 # -----------------------------
 # Credentials
 # -----------------------------
 def load_service_account_info():
-    path = os.environ.get("GOOGLE_CREDENTIALS_FILE")
-    if path and os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as fh:
+    file_env = os.environ.get("GOOGLE_CREDENTIALS_FILE")
+    if file_env and os.path.exists(file_env):
+        with open(file_env, "r", encoding="utf-8") as fh:
             return json.load(fh)
-    raw = os.environ.get("GOOGLE_CREDENTIALS")
-    if not raw:
+    creds_raw = os.environ.get("GOOGLE_CREDENTIALS")
+    if not creds_raw:
         raise ValueError("Missing GOOGLE_CREDENTIALS or GOOGLE_CREDENTIALS_FILE")
-    raw = raw.strip()
-    if raw.startswith("{"):
-        return json.loads(raw)
-    if os.path.exists(raw):
-        with open(raw, "r", encoding="utf-8") as fh:
+    creds_raw = creds_raw.strip()
+    if creds_raw.startswith("{"):
+        return json.loads(creds_raw)
+    if os.path.exists(creds_raw):
+        with open(creds_raw, "r", encoding="utf-8") as fh:
             return json.load(fh)
-    raise ValueError("Invalid GOOGLE_CREDENTIALS value")
-
+    raise ValueError("Invalid GOOGLE_CREDENTIALS")
 
 def init_sheets_service_from_env():
     info = load_service_account_info()
     creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-    # Return spreadsheets() resource for convenience
-    return build("sheets", "v4", credentials=creds).spreadsheets()
-
+    return build("sheets", "v4", credentials=creds)
 
 # -----------------------------
-# Sheets client
+# Sheets Client
 # -----------------------------
 class SheetsClient:
-    def __init__(self, spreadsheet_id, service_resource):
-        """
-        service_resource: build(...).spreadsheets() resource
-        """
+    def __init__(self, spreadsheet_id, service):
         self.spreadsheet_id = spreadsheet_id
-        self.svc = service_resource
+        self.svc = service.spreadsheets()
 
     def sheet_exists(self, name):
         info = self.svc.get(spreadsheetId=self.spreadsheet_id).execute()
@@ -111,16 +88,18 @@ class SheetsClient:
 
     def get_values(self, sheet, rng="A:Z"):
         try:
-            res = self.svc.values().get(spreadsheetId=self.spreadsheet_id, range=f"'{sheet}'!{rng}").execute()
+            res = self.svc.values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"'{sheet}'!{rng}"
+            ).execute()
             return res.get("values", [])
         except Exception:
             return []
 
     def clear(self, sheet, rng="A:Z"):
-        try:
-            self.svc.values().clear(spreadsheetId=self.spreadsheet_id, range=f"'{sheet}'!{rng}").execute()
-        except Exception:
-            pass
+        self.svc.values().clear(
+            spreadsheetId=self.spreadsheet_id, range=f"'{sheet}'!{rng}"
+        ).execute()
 
     def write_values(self, sheet, values):
         self.svc.values().update(
@@ -131,147 +110,87 @@ class SheetsClient:
         ).execute()
 
     def get_previous_keys(self, sheet_name):
-        """
-        Robustly find the header row (looks for 'Property ID' cell),
-        then collect unique keys from rows after the header.
-        Keys = Property ID if present, otherwise Address|Defendant.
-        """
         vals = self.get_values(sheet_name)
         if not vals or len(vals) < 2:
             return set()
-
+        keys = set()
         header_idx = -1
         for i, row in enumerate(vals):
-            if row and len(row) > 0 and row[0].strip().lower() == "property id":
+            if row and row[0].lower().strip() == "property id":
                 header_idx = i
                 break
         if header_idx == -1:
-            # fallback: if no header found, try to skip 2 top rows (snapshot+header)
-            start_idx = 2 if len(vals) > 2 else 0
-        else:
-            start_idx = header_idx + 1
-
-        keys = set()
-        for row in vals[start_idx:]:
-            if not row:
-                continue
+            return set()
+        for row in vals[header_idx + 1:]:
             try:
-                pid = row[0].strip() if len(row) > 0 else ""
-                if pid:
-                    keys.add(pid)
-                else:
-                    addr = row[1].strip() if len(row) > 1 else ""
-                    defn = row[2].strip() if len(row) > 2 else ""
-                    if addr or defn:
-                        keys.add(f"{addr}|{defn}")
-            except Exception:
+                key = row[0].strip() or (row[1].strip() + "|" + row[2].strip())
+                keys.add(key)
+            except IndexError:
                 continue
         return keys
 
-    def write_snapshot(self, sheet_name, headers, rows, prev_keys):
-        """
-        Write snapshot and apply formatting.
-        - headers: list of column headers
-        - rows: list of lists (already filtered to the 30-day window)
-        - prev_keys: set of keys from existing sheet (obtained BEFORE calling this)
-        """
-        start, end = window_range()
-        start_label = start.strftime("%Y-%m-%d")
-        end_label = end.strftime("%Y-%m-%d")
-        snapshot_label = f"Snapshot for {start.strftime('%A')} - {start_label} → {end_label}"
+    def write_snapshot(self, sheet_name, headers, rows, prev_keys, filter_dates):
+        today = datetime.now()
+        filtered_rows, new_keys = [], set()
 
-        # compute new keys set
-        new_keys = set()
-        filtered_rows = []
         for r in rows:
-            # r should be list aligned with headers
-            # compute key same as get_previous_keys
-            pid = r[0].strip() if len(r) > 0 and r[0] else ""
-            if pid:
-                key = pid
-            else:
-                addr = r[1].strip() if len(r) > 1 and r[1] else ""
-                defn = r[2].strip() if len(r) > 2 and r[2] else ""
-                key = f"{addr}|{defn}"
-            filtered_rows.append(r)
-            if key not in {str(k) for k in prev_keys}:
-                new_keys.add(str(key))
+            is_valid = True
+            if filter_dates:
+                date_idx = next((i for i, c in enumerate(headers) if "sale" in c.lower()), -1)
+                if date_idx != -1 and len(r) > date_idx:
+                    is_valid = is_within_30_days(r[date_idx], today)
+                else:
+                    is_valid = False
+            if is_valid:
+                filtered_rows.append(r)
+                key = r[0].strip() or (r[1].strip() + "|" + r[2].strip())
+                if key not in prev_keys:
+                    new_keys.add(key)
 
-        # assemble values: snapshot row, header row, data rows
-        values = [[snapshot_label]] + [headers] + filtered_rows
-        # clear & write
+        values = [[f"Snapshot - {today_str()}"]] + [headers] + filtered_rows
         self.clear(sheet_name)
         self.write_values(sheet_name, values)
-        # apply formatting and highlighting
         self.apply_formatting(sheet_name, headers, filtered_rows, new_keys)
         return len(filtered_rows), len(new_keys)
 
     def apply_formatting(self, sheet_name, headers, rows, new_keys):
-        """
-        Apply header bold, freeze header rows, autocol resize, and highlight new rows.
-        Note: Google Sheets uses 0-based indices.
-        Snapshot row = row index 0
-        Header row   = row index 1
-        First data row = index 2
-        """
         info = self.svc.get(spreadsheetId=self.spreadsheet_id).execute()
         sheet_id = None
-        for s in info.get("sheets", []):
+        for s in info["sheets"]:
             if s["properties"]["title"] == sheet_name:
                 sheet_id = s["properties"]["sheetId"]
-                break
-        if sheet_id is None:
+        if not sheet_id:
             return
 
         num_cols = len(headers)
         requests = [
-            # bold header row (index 1)
-            {
-                "repeatCell": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2},
-                    "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
-                    "fields": "userEnteredFormat.textFormat.bold"
-                }
-            },
-            # freeze top 2 rows (snapshot + header)
-            {
-                "updateSheetProperties": {
-                    "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 2}},
-                    "fields": "gridProperties.frozenRowCount"
-                }
-            },
-            # auto-resize columns
-            {
-                "autoResizeDimensions": {
-                    "dimensions": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": num_cols}
-                }
-            }
+            {"repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": 2},
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold"
+            }},
+            {"updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 2}},
+                "fields": "gridProperties.frozenRowCount"
+            }},
+            {"autoResizeDimensions": {
+                "dimensions": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": num_cols}
+            }}
         ]
-
-        # highlight new rows: each data row's sheet index = idx + 2
         for idx, row in enumerate(rows):
-            pid = row[0].strip() if len(row) > 0 and row[0] else ""
-            if pid:
-                key = pid
-            else:
-                addr = row[1].strip() if len(row) > 1 and row[1] else ""
-                defn = row[2].strip() if len(row) > 2 and row[2] else ""
-                key = f"{addr}|{defn}"
-            if str(key) in {str(k) for k in new_keys}:
-                start_row = idx + 2
+            key = row[0].strip() or (row[1].strip() + "|" + row[2].strip())
+            if key in new_keys:
+                sheet_row = idx + 2
                 requests.append({
                     "repeatCell": {
                         "range": {
                             "sheetId": sheet_id,
-                            "startRowIndex": start_row,
-                            "endRowIndex": start_row + 1,
-                            "startColumnIndex": 0,
-                            "endColumnIndex": num_cols
+                            "startRowIndex": sheet_row, "endRowIndex": sheet_row + 1,
+                            "startColumnIndex": 0, "endColumnIndex": num_cols
                         },
                         "cell": {"userEnteredFormat": {"backgroundColor": {"red": 0.85, "green": 0.95, "blue": 0.85}}},
                         "fields": "userEnteredFormat.backgroundColor"
                     }
                 })
-
         if requests:
             self.svc.batchUpdate(spreadsheetId=self.spreadsheet_id, body={"requests": requests}).execute()

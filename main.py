@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Orchestrator: runs scraper and writes to Google Sheets (per-county tabs + Dashboard)
+Main Orchestrator
+- Runs scraper.py
+- Uses highlighting.py for Sheets handling
 """
 
 import os
 import sys
 import asyncio
 from datetime import datetime
+from playwright.async_api import async_playwright
+
 from scraper import ForeclosureScraper
 from highlighting import SheetsClient, init_sheets_service_from_env
 
@@ -35,46 +39,41 @@ async def run():
 
     service = init_sheets_service_from_env()
     sheets = SheetsClient(spreadsheet_id, service)
-    dashboard_rows = []
+    dashboard_data = []
 
-    scraper = ForeclosureScraper(headless=True)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        scraper = ForeclosureScraper(sheets)
 
-    # Use the scraper's async context manager
-    async with scraper.launch_browser() as page:
         for c in TARGET_COUNTIES:
-            county_name = c["county_name"]
-            print(f"→ Processing {county_name}")
-            tab = county_name[:100]
+            print(f"Processing {c['county_name']}...")
+            tab = c["county_name"][:30]
             sheets.create_sheet_if_missing(tab)
 
-            # Get previous keys BEFORE writing/clearing
             prev_keys = sheets.get_previous_keys(tab)
-
-            # Scrape — scraper already filters to the next 30 days
             recs = await scraper.scrape_county_sales(page, c)
 
             if not recs:
-                print(f"   No next-30-day records for {county_name}.")
-                dashboard_rows.append([county_name, 0, 0])
-                await asyncio.sleep(POLITE_DELAY_SECONDS)
+                print(f"No records for {c['county_name']}")
                 continue
 
             headers = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment"]
-            total, new = sheets.write_snapshot(tab, headers, recs, prev_keys)
+            total, new = sheets.write_snapshot(tab, headers, recs, prev_keys, filter_dates=True)
+            print(f"--> {c['county_name']}: {total} active ({new} new)")
+            dashboard_data.append([c["county_name"], total, new])
 
-            print(f"   {county_name}: {total} active ({new} new)")
-            dashboard_rows.append([county_name, total, new])
             await asyncio.sleep(POLITE_DELAY_SECONDS)
+        await browser.close()
 
-    # Write dashboard
-    if dashboard_rows:
+    if dashboard_data:
         sheets.create_sheet_if_missing("Dashboard")
         today = datetime.now().strftime("%Y-%m-%d")
-        values = [["Dashboard - " + today], ["County", "Active (30d)", "New Today"]] + dashboard_rows
+        values = [["Dashboard - " + today], ["County", "Active (30d)", "New Today"]] + dashboard_data
         sheets.clear("Dashboard")
         sheets.write_values("Dashboard", values)
 
-    print("Done.")
+    print("🎉 Scraping + Sheets update complete.")
 
 if __name__ == "__main__":
     asyncio.run(run())

@@ -3,7 +3,7 @@ name: Foreclosure Sales Scraper
 on:
   # Run automatically every day at 6:00 AM EST (11:00 AM UTC)
   schedule:
-    - cron: '0 11 * * *'
+    - cron: '30 14 * * *'
   
   # Allow manual triggering
   workflow_dispatch:
@@ -18,122 +18,35 @@ env:
   # Environment variables (secrets will be set in GitHub)
   SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
   GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-  
+
 jobs:
   scrape-foreclosures:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      
+
     - name: Set up Python 3.11
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'
-        
+
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        
-    - name: Install Playwright browsers
-      run: |
-        playwright install chromium
-        playwright install-deps
-        
-    - name: Verify environment variables
-      run: |
-        if [ -z "${{ secrets.SPREADSHEET_ID }}" ]; then
-          echo "❌ SPREADSHEET_ID secret is not set"
-          exit 1
-        fi
-        if [ -z "${{ secrets.GOOGLE_CREDENTIALS }}" ]; then
-          echo "❌ GOOGLE_CREDENTIALS secret is not set"
-          exit 1
-        fi
-        echo "✅ Required secrets are configured"
-        
-    - name: Create logs directory
-      if: always()
-      run: mkdir -p logs
-        
-    - name: Run foreclosure scraper
-      run: |
-        echo "🚀 Starting foreclosure sales scraper..."
-        echo "📅 Current time: $(date)"
-        
-        if [ "${{ inputs.debug_mode }}" = "true" ]; then
-          echo "🐛 Debug mode enabled"
-          python -u main.py 2>&1 | tee logs/scraper.log
-        else
-          python main.py 2>&1 | tee logs/scraper.log
-        fi
-        
-        echo "✅ Scraper completed successfully"
-        
-    - name: Upload logs on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: scraper-logs-${{ github.run_number }}
-        path: |
-          logs/
-          *.log
-          screenshots/
-        retention-days: 7
-        if-no-files-found: ignore
-        
-    - name: Upload logs on success (debug mode)
-      if: success() && inputs.debug_mode == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: scraper-debug-logs-${{ github.run_number }}
-        path: |
-          logs/
-          *.log
-        retention-days: 3
-        if-no-files-found: ignore
-        
-    - name: Notify on failure (optional)
-      if: failure()
-      run: |
-        echo "❌ Scraper failed. Check the logs for details."
-        echo "Run ID: ${{ github.run_id }}"
-        echo "Run Number: ${{ github.run_number }}"
-        echo "View logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-# Optional: Add a second job for different schedule or configuration  
-  scrape-foreclosures-evening:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Run at 6:00 PM EST (11:00 PM UTC) - uncomment if needed
-    # schedule:
-    #   - cron: '0 23 * * *'
-    if: false  # Disabled by default, set to true to enable evening runs
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
-        
-    - name: Install dependencies
+    - name: Install system dependencies for Playwright (Ubuntu 24.04)
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        
-        # Install system dependencies for Ubuntu 24.04
-        echo "📦 Installing system dependencies for Ubuntu 24.04..."
+        echo "📦 Installing system dependencies..."
         sudo apt-get update
         sudo apt-get install -y \
           libasound2t64 \
+          libffi8 \
+          libx264-164 \
           libatk-bridge2.0-0 \
           libatk1.0-0 \
           libatspi2.0-0 \
@@ -148,15 +61,120 @@ jobs:
           libxfixes3 \
           libxkbcommon0 \
           libxrandr2 \
-          xvfb || echo "Some packages failed, continuing..."
-        
-        # Install Playwright browsers
+          xvfb || echo "⚠️ Some packages failed, continuing..."
+
+    - name: Install Playwright browsers
+      run: |
         export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
         playwright install chromium
-        
+
+    - name: Verify environment variables
+      run: |
+        if [ -z "${{ secrets.SPREADSHEET_ID }}" ]; then
+          echo "❌ SPREADSHEET_ID secret is not set"
+          exit 1
+        fi
+        if [ -z "${{ secrets.GOOGLE_CREDENTIALS }}" ]; then
+          echo "❌ GOOGLE_CREDENTIALS secret is not set"
+          exit 1
+        fi
+        echo "✅ Required secrets are configured"
+
     - name: Create logs directory
       run: mkdir -p logs
-        
+
+    - name: Run foreclosure scraper
+      run: |
+        echo "🚀 Starting foreclosure sales scraper..."
+        echo "📅 Current time: $(date)"
+
+        if [ "${{ inputs.debug_mode }}" = "true" ]; then
+          echo "🐛 Debug mode enabled"
+          python -u main.py 2>&1 | tee logs/scraper.log
+        else
+          python main.py 2>&1 | tee logs/scraper.log
+        fi
+
+        echo "✅ Scraper completed successfully"
+
+    - name: Upload logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraper-logs-${{ github.run_number }}
+        path: |
+          logs/
+          *.log
+          screenshots/
+        retention-days: 7
+        if-no-files-found: ignore
+
+    - name: Upload logs on success (debug mode)
+      if: success() && inputs.debug_mode == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraper-debug-logs-${{ github.run_number }}
+        path: |
+          logs/
+          *.log
+        retention-days: 3
+        if-no-files-found: ignore
+
+    - name: Notify on failure (optional)
+      if: failure()
+      run: |
+        echo "❌ Scraper failed. Check the logs for details."
+        echo "Run ID: ${{ github.run_id }}"
+        echo "Run Number: ${{ github.run_number }}"
+        echo "View logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+# Optional evening job (disabled by default)
+  scrape-foreclosures-evening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: false  # Enable by changing to 'true'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        echo "📦 Installing system dependencies for Ubuntu 24.04..."
+        sudo apt-get update
+        sudo apt-get install -y \
+          libasound2t64 \
+          libffi8 \
+          libx264-164 \
+          libatk-bridge2.0-0 \
+          libatk1.0-0 \
+          libatspi2.0-0 \
+          libcups2t64 \
+          libdrm2 \
+          libgtk-3-0t64 \
+          libnspr4 \
+          libnss3 \
+          libwayland-client0 \
+          libxcomposite1 \
+          libxdamage1 \
+          libxfixes3 \
+          libxkbcommon0 \
+          libxrandr2 \
+          xvfb || echo "⚠️ Some packages failed, continuing..."
+        export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
+        playwright install chromium
+
+    - name: Create logs directory
+      run: mkdir -p logs
+
     - name: Run evening scraper
       env:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
@@ -164,7 +182,7 @@ jobs:
       run: |
         echo "🌙 Running evening foreclosure scraper..."
         python main.py 2>&1 | tee logs/evening-scraper.log
-        
+
     - name: Upload evening logs on failure
       if: failure()
       uses: actions/upload-artifact@v4

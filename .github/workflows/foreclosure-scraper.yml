@@ -22,6 +22,7 @@ env:
 jobs:
   scrape-foreclosures:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
     - name: Checkout repository
@@ -55,6 +56,10 @@ jobs:
         fi
         echo "✅ Required secrets are configured"
         
+    - name: Create logs directory
+      if: always()
+      run: mkdir -p logs
+        
     - name: Run foreclosure scraper
       run: |
         echo "🚀 Starting foreclosure sales scraper..."
@@ -62,22 +67,35 @@ jobs:
         
         if [ "${{ inputs.debug_mode }}" = "true" ]; then
           echo "🐛 Debug mode enabled"
-          python -u main.py
+          python -u main.py 2>&1 | tee logs/scraper.log
         else
-          python main.py
+          python main.py 2>&1 | tee logs/scraper.log
         fi
         
         echo "✅ Scraper completed successfully"
         
     - name: Upload logs on failure
       if: failure()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: scraper-logs-${{ github.run_number }}
         path: |
+          logs/
           *.log
           screenshots/
         retention-days: 7
+        if-no-files-found: ignore
+        
+    - name: Upload logs on success (debug mode)
+      if: success() && inputs.debug_mode == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraper-debug-logs-${{ github.run_number }}
+        path: |
+          logs/
+          *.log
+        retention-days: 3
+        if-no-files-found: ignore
         
     - name: Notify on failure (optional)
       if: failure()
@@ -85,10 +103,12 @@ jobs:
         echo "❌ Scraper failed. Check the logs for details."
         echo "Run ID: ${{ github.run_id }}"
         echo "Run Number: ${{ github.run_number }}"
+        echo "View logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-# Optional: Add a second job for different schedule or configuration
+# Optional: Add a second job for different schedule or configuration  
   scrape-foreclosures-evening:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Run at 6:00 PM EST (11:00 PM UTC) - uncomment if needed
     # schedule:
     #   - cron: '0 23 * * *'
@@ -99,7 +119,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Set up Python 3.11
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'
@@ -111,10 +131,24 @@ jobs:
         playwright install chromium
         playwright install-deps
         
+    - name: Create logs directory
+      run: mkdir -p logs
+        
     - name: Run evening scraper
       env:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
       run: |
         echo "🌙 Running evening foreclosure scraper..."
-        python main.py
+        python main.py 2>&1 | tee logs/evening-scraper.log
+        
+    - name: Upload evening logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: evening-scraper-logs-${{ github.run_number }}
+        path: |
+          logs/
+          *.log
+        retention-days: 7
+        if-no-files-found: ignore

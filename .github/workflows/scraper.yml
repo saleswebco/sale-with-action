@@ -13,11 +13,16 @@ jobs:
   test_credentials:
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright:v1.47.0-jammy
+      image: mcr.microsoft.com/playwright:focal
     timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - uses: actions/cache@v4
         with:
@@ -28,25 +33,30 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --no-cache-dir -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
 
       - name: Run credential test
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: python3 test_google_auth.py
+        run: python test_google_auth.py
 
   scrape_foreclosures:
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright:v1.47.0-jammy
+      image: mcr.microsoft.com/playwright:focal
     timeout-minutes: 15
     needs: test_credentials
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
@@ -56,8 +66,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --no-cache-dir -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
 
       - name: Run foreclosure scraper
         env:
@@ -66,7 +76,7 @@ jobs:
           POLITE_DELAY_SECONDS: ${{ vars.POLITE_DELAY_SECONDS }}
         run: |
           echo "▶ Running foreclosure scraper..."
-          python3 main.py
+          python main_tes.py
 
       - name: Retry on failure
         if: failure()
@@ -76,4 +86,4 @@ jobs:
         run: |
           echo "⚠ First attempt failed, retrying in 60s..."
           sleep 60
-          python3 main.py
+          python main_tes.py

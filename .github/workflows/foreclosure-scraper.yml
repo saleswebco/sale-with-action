@@ -1,114 +1,89 @@
-name: Foreclosure Sales Scraper
+name: Sales With Action
 
 on:
-  # Run automatically every day at 6:00 AM EST (11:00 AM UTC)
+  workflow_dispatch: {}
   schedule:
-    - cron: '30 14 * * *'
-  
-  # Allow manual triggering
-  workflow_dispatch:
-    inputs:
-      debug_mode:
-        description: 'Enable debug logging'
-        required: false
-        default: 'false'
-        type: boolean
+    # Daily at 9:30 AM EST → 14:30 UTC
+    - cron: "30 14 * * *"
 
-env:
-  # Environment variables (secrets must be set in GitHub)
-  SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-  GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+permissions:
+  contents: read
 
 jobs:
-  scrape-foreclosures:
+  test_credentials:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    container:
+      image: mcr.microsoft.com/playwright:focal
+    timeout-minutes: 10
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-    - name: Install Playwright browsers and dependencies
-      run: |
-        # Install system dependencies
-        sudo apt-get update
-        sudo apt-get install -y \
-          libatk-bridge2.0-0 libatk1.0-0 libcups2 libdrm2 libgtk-3-0 \
-          libnspr4 libnss3 libwayland-client0 libxcomposite1 libxdamage1 \
-          libxfixes3 libxkbcommon0 libxrandr2 xvfb || echo "Some packages failed, continuing..."
-        
-        # Install Playwright and Chromium
-        python -m pip install playwright
-        playwright install chromium
-        export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
 
-    - name: Verify environment variables
-      run: |
-        if [ -z "${{ secrets.SPREADSHEET_ID }}" ]; then
-          echo "❌ SPREADSHEET_ID secret is not set"
-          exit 1
-        fi
-        if [ -z "${{ secrets.GOOGLE_CREDENTIALS }}" ]; then
-          echo "❌ GOOGLE_CREDENTIALS secret is not set"
-          exit 1
-        fi
-        echo "✅ Required secrets are configured"
+      - name: Run credential test
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python test_google_auth.py
 
-    - name: Create logs directory
-      run: mkdir -p logs
+  scrape_foreclosures:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:focal
+    timeout-minutes: 15
+    needs: test_credentials
 
-    - name: Run foreclosure scraper
-      run: |
-        echo "🚀 Starting foreclosure sales scraper..."
-        echo "📅 Current time: $(date)"
+    steps:
+      - uses: actions/checkout@v4
 
-        if [ "${{ inputs.debug_mode }}" = "true" ]; then
-          echo "🐛 Debug mode enabled"
-          python -u main.py 2>&1 | tee logs/scraper.log
-        else
-          python main.py 2>&1 | tee logs/scraper.log
-        fi
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-        echo "✅ Scraper completed successfully"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-    - name: Upload logs on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: scraper-logs-${{ github.run_number }}
-        path: |
-          logs/
-          *.log
-          screenshots/
-        retention-days: 7
-        if-no-files-found: ignore
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
 
-    - name: Upload logs on success (debug mode)
-      if: success() && inputs.debug_mode == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: scraper-debug-logs-${{ github.run_number }}
-        path: |
-          logs/
-          *.log
-        retention-days: 3
-        if-no-files-found: ignore
+      - name: Run foreclosure scraper
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          POLITE_DELAY_SECONDS: ${{ vars.POLITE_DELAY_SECONDS }}
+        run: |
+          echo "▶ Running foreclosure scraper..."
+          python main.py
 
-    - name: Notify on failure (optional)
-      if: failure()
-      run: |
-        echo "❌ Scraper failed. Check the logs for details."
-        echo "Run ID: ${{ github.run_id }}"
-        echo "Run Number: ${{ github.run_number }}"
-        echo "View logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Retry on failure
+        if: failure()
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          echo "⚠ First attempt failed, retrying in 60s..."
+          sleep 60
+          python main.py

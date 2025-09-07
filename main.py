@@ -1,95 +1,80 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Main Orchestrator for Foreclosure Scraper
-- Uses scraper.py for scraping
-- Uses highlighting.py for sheets formatting + 30-day window filtering
-- Writes results into Google Sheets
+Orchestrator: runs scraper and writes to Google Sheets (per-county tabs + Dashboard)
 """
 
 import os
 import sys
 import asyncio
-import pandas as pd
-from rambow import Color
+from datetime import datetime
+from scraper import ForeclosureScraper
+from highlighting import SheetsClient, init_sheets_service_from_env
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+TARGET_COUNTIES = [
+    {"county_id": "52", "county_name": "Cape May County, NJ"},
+    {"county_id": "25", "county_name": "Atlantic County, NJ"},
+    {"county_id": "1", "county_name": "Camden County, NJ"},
+    {"county_id": "3", "county_name": "Burlington County, NJ"},
+    {"county_id": "6", "county_name": "Cumberland County, NJ"},
+    {"county_id": "19", "county_name": "Gloucester County, NJ"},
+    {"county_id": "20", "county_name": "Salem County, NJ"},
+    {"county_id": "15", "county_name": "Union County, NJ"},
+    {"county_id": "7", "county_name": "Bergen County, NJ"},
+    {"county_id": "2", "county_name": "Essex County, NJ"},
+    {"county_id": "23", "county_name": "Montgomery County, PA"},
+    {"county_id": "24", "county_name": "New Castle County, DE"},
+]
 
-from scraper import ForeclosureScraper, TARGET_COUNTIES
-from highlighting import SheetsHelper, is_within_30_days, today_str
+POLITE_DELAY_SECONDS = 1.5
 
-# -----------------------------
-# Config
-# -----------------------------
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-BASE_URL = "https://salesweb.civilview.com/"
-
-def init_sheets_client():
-    """Initialize Sheets API service."""
-    creds_str = os.environ.get("GOOGLE_CREDENTIALS")
-    if not creds_str:
-        sys.exit(Color.red("Missing GOOGLE_CREDENTIALS env variable."))
-
-    creds_dict = eval(creds_str) if isinstance(creds_str, str) else creds_str
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=SCOPES
-    )
-    return build("sheets", "v4", credentials=creds)
-
-# -----------------------------
-# Main Runner
-# -----------------------------
 async def run():
     spreadsheet_id = os.environ.get("SPREADSHEET_ID")
     if not spreadsheet_id:
-        sys.exit(Color.red("Missing SPREADSHEET_ID environment variable."))
+        sys.exit("Missing SPREADSHEET_ID env variable.")
 
-    service = init_sheets_client()
-    sheets = SheetsHelper(spreadsheet_id, service)
-
-    scraper = ForeclosureScraper(BASE_URL)
+    service = init_sheets_service_from_env()
+    sheets = SheetsClient(spreadsheet_id, service)
     dashboard_rows = []
 
+    scraper = ForeclosureScraper(headless=True)
+
+    # Use the scraper's async context manager
     async with scraper.launch_browser() as page:
         for c in TARGET_COUNTIES:
-            cname = c["county_name"]
-            print(Color.cyan(f"⚡ Processing {cname}..."))
+            county_name = c["county_name"]
+            print(f"→ Processing {county_name}")
+            tab = county_name[:100]
+            sheets.create_sheet_if_missing(tab)
 
-            tab = cname[:30]  # Sheets tab name limit
-            sheets.ensure_sheet(tab)
+            # Get previous keys BEFORE writing/clearing
+            prev_keys = sheets.get_previous_keys(tab)
 
-            prev_keys = sheets.get_existing_keys(tab)
-            records = await scraper.scrape_county_sales(page, c)
+            # Scrape — scraper already filters to the next 30 days
+            recs = await scraper.scrape_county_sales(page, c)
 
-            if not records:
-                print(Color.yellow(f"→ No records for {cname}"))
+            if not recs:
+                print(f"   No next-30-day records for {county_name}.")
+                dashboard_rows.append([county_name, 0, 0])
+                await asyncio.sleep(POLITE_DELAY_SECONDS)
                 continue
 
-            # Use pandas for processing
-            df = pd.DataFrame(records, columns=[
-                "Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment"
-            ])
+            headers = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment"]
+            total, new = sheets.write_snapshot(tab, headers, recs, prev_keys)
 
-            # Filter 30-day window
-            df = df[df["Sales Date"].apply(lambda x: is_within_30_days(x))]
+            print(f"   {county_name}: {total} active ({new} new)")
+            dashboard_rows.append([county_name, total, new])
+            await asyncio.sleep(POLITE_DELAY_SECONDS)
 
-            total_rows, new_count = sheets.write_snapshot(
-                tab, df, prev_keys
-            )
-
-            print(Color.green(f"✓ {cname}: {total_rows} active ({new_count} new)"))
-            dashboard_rows.append([cname, total_rows, new_count])
-
-    # Write Dashboard
+    # Write dashboard
     if dashboard_rows:
-        sheets.ensure_sheet("Dashboard")
-        dashboard_df = pd.DataFrame(dashboard_rows, columns=[
-            "County", "Active (30d)", "New Today"
-        ])
-        sheets.write_dashboard(dashboard_df)
+        sheets.create_sheet_if_missing("Dashboard")
+        today = datetime.now().strftime("%Y-%m-%d")
+        values = [["Dashboard - " + today], ["County", "Active (30d)", "New Today"]] + dashboard_rows
+        sheets.clear("Dashboard")
+        sheets.write_values("Dashboard", values)
 
-    print(Color.magenta("🎉 Scraping + Sheets update complete."))
+    print("Done.")
 
 if __name__ == "__main__":
     asyncio.run(run())

@@ -1,109 +1,106 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Scraper for Tyler SalesWeb foreclosure data
+Playwright-based scraper
+- includes async context manager launch_browser()
+- filters each row to the next 30 days before returning
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from urllib.parse import urlparse, parse_qs
-from rambow import Color
+from datetime import datetime, timedelta
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-# Counties to scrape
-TARGET_COUNTIES = [
-    {"county_id": "52", "county_name": "Cape May County, NJ"},
-    {"county_id": "25", "county_name": "Atlantic County, NJ"},
-    {"county_id": "1", "county_name": "Camden County, NJ"},
-    {"county_id": "3", "county_name": "Burlington County, NJ"},
-    {"county_id": "6", "county_name": "Cumberland County, NJ"},
-    {"county_id": "19", "county_name": "Gloucester County, NJ"},
-    {"county_id": "20", "county_name": "Salem County, NJ"},
-    {"county_id": "15", "county_name": "Union County, NJ"},
-    {"county_id": "7", "county_name": "Bergen County, NJ"},
-    {"county_id": "2", "county_name": "Essex County, NJ"},
-    {"county_id": "23", "county_name": "Montgomery County, PA"},
-    {"county_id": "24", "county_name": "New Castle County, DE"},
-]
+WINDOW_DAYS = 30
+BASE_URL = "https://salesweb.civilview.com/"
+MAX_RETRIES = 5
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def extract_property_id(href):
+def parse_sale_date(date_str):
+    if not date_str:
+        return None
+    fmts = [
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%Y",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%m-%d-%Y",
+    ]
+    for f in fmts:
+        try:
+            return datetime.strptime(date_str.strip(), f)
+        except Exception:
+            continue
+    return None
+
+def is_within_30_days(date_str, today=None):
+    dt = parse_sale_date(date_str)
+    if not dt:
+        return False
+    t = today or datetime.now()
+    end = t + timedelta(days=WINDOW_DAYS - 1)
+    return t.date() <= dt.date() <= end.date()
+
+def extract_property_id_from_href(href):
     try:
         q = parse_qs(urlparse(href).query)
         return q.get("PropertyId", [""])[0]
     except Exception:
         return ""
 
-# -----------------------------
-# Scraper Class
-# -----------------------------
 class ForeclosureScraper:
-    def __init__(self, base_url, retries=3):
-        self.base_url = base_url
+    def __init__(self, headless=True, retries=MAX_RETRIES):
+        self.headless = headless
         self.retries = retries
+        self._play = None
+        self._browser = None
 
+    @asynccontextmanager
     async def launch_browser(self):
-        self.p = await async_playwright().start()
-        self.browser = await self.p.chromium.launch(headless=True)
-        return await self.browser.new_page()
+        """
+        Yields a Playwright Page instance; cleans up on exit.
+        Usage: async with scraper.launch_browser() as page:
+        """
+        self._play = await async_playwright().start()
+        self._browser = await self._play.chromium.launch(headless=self.headless)
+        page = await self._browser.new_page()
+        try:
+            yield page
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            try:
+                await self._play.stop()
+            except Exception:
+                pass
 
-    async def close(self):
-        await self.browser.close()
-        await self.p.stop()
-
-    async def goto_url(self, page, url):
+    async def goto_with_retry(self, page, url):
         for attempt in range(self.retries):
             try:
-                resp = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                resp = await page.goto(url, wait_until="networkidle", timeout=60000)
                 if resp and resp.status == 200:
-                    return True
+                    return resp
             except PlaywrightTimeoutError:
-                print(Color.red(f"⏳ Timeout {attempt+1} for {url}"))
+                print(f"Timeout attempt {attempt+1} for {url}")
+            except Exception as e:
+                print(f"Navigation error attempt {attempt+1}: {e}")
             await asyncio.sleep(2**attempt)
-        return False
-
-    async def scrape_county_sales(self, page, county):
-        url = f"{self.base_url}Sales/SalesSearch?countyId={county['county_id']}"
-        if not await self.goto_url(page, url):
-            return []
-
-        try:
-            await page.wait_for_selector("table.table tbody tr, .no-sales, #noData", timeout=20000)
-        except PlaywrightTimeoutError:
-            return []
-
-        no_data = await page.locator(".no-sales, #noData").all_text_contents()
-        if no_data:
-            return []
-
-        colmap = await self.get_columns(page)
-        rows = page.locator("table.table tbody tr")
-        n = await rows.count()
-        results = []
-
-        for i in range(n):
-            r = rows.nth(i)
-            a = r.locator("td.hidden-print a")
-            href = (await a.get_attribute("href")) or ""
-            pid = extract_property_id(href)
-
-            cells = await r.locator("td").all()
-            data = {
-                "Property ID": pid,
-                "Address": await cells[colmap.get("address", 0)].inner_text(),
-                "Defendant": await cells[colmap.get("defendant", 0)].inner_text(),
-                "Sales Date": await cells[colmap.get("sales_date", 0)].inner_text(),
-                "Approx Judgment": await cells[colmap.get("approx_judgment", 0)].inner_text(),
-            }
-            results.append(list(data.values()))
-
-        return results
+        return None
 
     async def get_columns(self, page):
         cols = {}
         ths = page.locator("table.table thead th")
-        n = await ths.count()
+        try:
+            n = await ths.count()
+        except Exception:
+            return cols
         for i in range(n):
             t = (await ths.nth(i).inner_text()).lower()
             if "sale" in t and "date" in t:
@@ -115,3 +112,46 @@ class ForeclosureScraper:
             elif "judgment" in t:
                 cols["approx_judgment"] = i
         return cols
+
+    async def scrape_county_sales(self, page, county):
+        """
+        Returns only rows that fall into the next 30 days window.
+        Each returned row is: [Property ID, Address, Defendant, Sales Date, Approx Judgment]
+        """
+        url = f"{BASE_URL}Sales/SalesSearch?countyId={county['county_id']}"
+        await self.goto_with_retry(page, url)
+        try:
+            await page.wait_for_selector("table.table tbody tr, .no-sales, #noData", timeout=30000)
+        except PlaywrightTimeoutError:
+            return []
+        if await page.locator(".no-sales, #noData").count() > 0:
+            return []
+
+        colmap = await self.get_columns(page)
+        rows = page.locator("table.table tbody tr")
+        n = await rows.count()
+        out = []
+        for i in range(n):
+            r = rows.nth(i)
+            a = r.locator("td.hidden-print a")
+            href = (await a.get_attribute("href")) or ""
+            pid = extract_property_id_from_href(href)
+
+            cells = await r.locator("td").all()
+            def safe(idx):
+                try:
+                    return (await cells[idx].inner_text()).strip()
+                except Exception:
+                    return ""
+
+            sales_date = safe(colmap.get("sales_date", 0))
+            # Filter here: only append rows in the next 30 days window
+            if not is_within_30_days(sales_date):
+                continue
+
+            addr = safe(colmap.get("address", 0))
+            defendant = safe(colmap.get("defendant", 0))
+            approx_judg = safe(colmap.get("approx_judgment", 0))
+
+            out.append([pid, addr, defendant, sales_date, approx_judg])
+        return out

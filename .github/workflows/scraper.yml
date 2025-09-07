@@ -3,7 +3,7 @@ name: Sales With Action
 on:
   # Manual run
   workflow_dispatch: {}
-  # Scheduled daily at 9:30 AM EST → 14:30 UTC
+  # Scheduled daily run at 09:30 EST → 14:30 UTC
   schedule:
     - cron: "30 14 * * *"
 
@@ -13,24 +13,10 @@ permissions:
 jobs:
   test_credentials:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            wget curl gnupg software-properties-common \
-            fonts-liberation libnss3 libatk1.0-0 libcups2 \
-            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 \
-            libgtk-3-0 libgbm-dev libpango-1.0-0 libasound2 \
-            libxss1 libwoff1 libharfbuzz0b libfreetype6 libjpeg-turbo8 \
-            libpng16-16 xfonts-100dpi xfonts-75dpi xfonts-scalable xfonts-cyrillic \
-            locales tzdata
-          sudo dpkg-reconfigure locales
-          sudo dpkg-reconfigure tzdata
 
       - uses: actions/setup-python@v5
         with:
@@ -43,10 +29,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
+          pip install -r requirements.txt
+
+      - name: Install system dependencies for Playwright
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget curl gnupg software-properties-common \
+            fonts-liberation libnss3 libatk1.0-0 libcups2 \
+            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 \
+            libgtk-3-0 libgbm-dev libpango-1.0-0 \
+            libasound2t64 \
+            libxss1 libwoff1 libharfbuzz0b libfreetype6 libjpeg-turbo8 \
+            libpng16-16 xfonts-100dpi xfonts-75dpi xfonts-scalable xfonts-cyrillic \
+            locales tzdata
+          sudo dpkg-reconfigure locales
+          sudo dpkg-reconfigure tzdata
 
       - name: Install Playwright browsers
         run: |
@@ -61,25 +62,11 @@ jobs:
 
   scrape_foreclosures:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    needs: test_credentials
+    timeout-minutes: 30
+    needs: [test_credentials]
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            wget curl gnupg software-properties-common \
-            fonts-liberation libnss3 libatk1.0-0 libcups2 \
-            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 \
-            libgtk-3-0 libgbm-dev libpango-1.0-0 libasound2 \
-            libxss1 libwoff1 libharfbuzz0b libfreetype6 libjpeg-turbo8 \
-            libpng16-16 xfonts-100dpi xfonts-75dpi xfonts-scalable xfonts-cyrillic \
-            locales tzdata
-          sudo dpkg-reconfigure locales
-          sudo dpkg-reconfigure tzdata
 
       - uses: actions/setup-python@v5
         with:
@@ -92,16 +79,31 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
+          pip install -r requirements.txt
+
+      - name: Install system dependencies for Playwright
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget curl gnupg software-properties-common \
+            fonts-liberation libnss3 libatk1.0-0 libcups2 \
+            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 \
+            libgtk-3-0 libgbm-dev libpango-1.0-0 \
+            libasound2t64 \
+            libxss1 libwoff1 libharfbuzz0b libfreetype6 libjpeg-turbo8 \
+            libpng16-16 xfonts-100dpi xfonts-75dpi xfonts-scalable xfonts-cyrillic \
+            locales tzdata
+          sudo dpkg-reconfigure locales
+          sudo dpkg-reconfigure tzdata
 
       - name: Install Playwright browsers
         run: |
           python -m playwright install --with-deps chromium
 
-      - name: Run scraper
+      - name: Run scraper (attempt 1)
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
@@ -110,7 +112,7 @@ jobs:
           echo "▶ Running foreclosure scraper..."
           python main.py
 
-      - name: Retry on failure
+      - name: Retry on failure (attempt 2)
         if: failure()
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}

@@ -166,6 +166,7 @@ class SheetsClient:
         """
         vals = self.get_values(sheet_name)
         if not vals or len(vals) < 2: # Need at least a header and one row
+            print(f"No previous data found on sheet '{sheet_name}'. All records will be treated as new.")
             return set()
             
         keys = set()
@@ -177,21 +178,32 @@ class SheetsClient:
                 break
         
         if header_row_index == -1:
+            print(f"Warning: 'Property ID' header not found on sheet '{sheet_name}'. All records will be treated as new.")
             return set() # Header not found, no previous data
             
         # Iterate over the data rows (starting after the header)
         for row in vals[header_row_index + 1:]:
-            if len(row) > 2:
+            try:
                 # Use Property ID as key if available, otherwise use Address + Defendant
                 key = row[0].strip() or (row[1].strip() + "|" + row[2].strip())
                 keys.add(key)
+            except IndexError:
+                # This handles cases where a row might not have enough columns
+                continue
+        print(f"Found {len(keys)} previous records on sheet '{sheet_name}'.")
         return keys
 
     def write_snapshot(self, sheet_name, headers, rows, prev_keys, filter_dates):
-        """Writes a new data snapshot and applies formatting."""
+        """
+        Writes a new data snapshot and applies formatting.
+        This function first gets the previous keys, then clears the sheet.
+        The clearing of the sheet is intentional to ensure only the most
+        current 30-day records are shown.
+        """
         today = datetime.now()
         filtered_rows = []
         new_keys = set()
+        print(f"Filtering records from {today.strftime('%Y-%m-%d')} for the next 30 days.")
 
         for r in rows:
             is_valid_date = True
@@ -215,6 +227,7 @@ class SheetsClient:
         snapshot_header = [[f"Snapshot for {today.strftime('%A - %Y-%m-%d')}"]]
         values = snapshot_header + [headers] + filtered_rows + [[""]]
         
+        # Clear the sheet before writing to remove old data and maintain a clean 30-day view.
         self.clear(sheet_name)
         self.write_values(sheet_name, values)
         self.apply_formatting(sheet_name, headers, filtered_rows, new_keys)

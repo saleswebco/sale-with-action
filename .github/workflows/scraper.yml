@@ -1,9 +1,10 @@
 name: Sales With Action
 
 on:
+  # Manual run
   workflow_dispatch: {}
+  # Scheduled daily at 9:30 AM EST → 14:30 UTC
   schedule:
-    # Daily at 9:30 AM EST → 14:30 UTC
     - cron: "30 14 * * *"
 
 permissions:
@@ -12,10 +13,24 @@ permissions:
 jobs:
   test_credentials:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget curl gnupg software-properties-common \
+            fonts-liberation libnss3 libatk1.0-0 libcups2 \
+            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 \
+            libgtk-3-0 libgbm-dev libpango-1.0-0 libasound2 \
+            libxss1 libwoff1 libharfbuzz0b libfreetype6 libjpeg-turbo8 \
+            libpng16-16 xfonts-100dpi xfonts-75dpi xfonts-scalable xfonts-cyrillic \
+            locales tzdata
+          sudo dpkg-reconfigure locales
+          sudo dpkg-reconfigure tzdata
 
       - uses: actions/setup-python@v5
         with:
@@ -28,7 +43,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
@@ -46,11 +61,25 @@ jobs:
 
   scrape_foreclosures:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     needs: test_credentials
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget curl gnupg software-properties-common \
+            fonts-liberation libnss3 libatk1.0-0 libcups2 \
+            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 \
+            libgtk-3-0 libgbm-dev libpango-1.0-0 libasound2 \
+            libxss1 libwoff1 libharfbuzz0b libfreetype6 libjpeg-turbo8 \
+            libpng16-16 xfonts-100dpi xfonts-75dpi xfonts-scalable xfonts-cyrillic \
+            locales tzdata
+          sudo dpkg-reconfigure locales
+          sudo dpkg-reconfigure tzdata
 
       - uses: actions/setup-python@v5
         with:
@@ -63,7 +92,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt

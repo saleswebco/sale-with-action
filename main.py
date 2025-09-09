@@ -675,9 +675,6 @@
 
 
 
-
-
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -1205,14 +1202,16 @@ def run():
     # Standard columns for All Data
     all_cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "County", "Sale Type", "New Record"]
 
-    def normalize(row: dict, is_new: bool = True):
+    def normalize(row: dict):
         return {
             "Property ID": row.get("Property ID", ""),
             "Address": row.get("Address", ""),
             "Defendant": row.get("Defendant", ""),
             "Sales Date": row.get("Sales Date", ""),
             "Approx Judgment": row.get("Approx Judgment", ""),
-            "New Record": "Yes" if is_new else "No"  # Add New Record column
+            "Sale Type": row.get("Sale Type", "") if row.get("County") == "New Castle County, DE" else "",
+            "County": row.get("County", ""),
+            "New Record": "Yes"  # Default to "Yes" for new records
         }
 
     standardized = [normalize(r) for r in filtered]
@@ -1232,61 +1231,42 @@ def run():
         else:
             cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "New Record"]
 
-# Get existing data to compare with
-        existing_data = sheets.get_values(tab, "A:Z")
-        existing_records = set()
+        # Get existing data for comparison
+        existing = sheets.get_values(tab, "A:Z")
+        existing_data = []
+        if existing and len(existing) > 2:  # Has snapshot, header, and at least one data row
+            header_idx = sheets.detect_header_row_index(existing)
+            if header_idx < len(existing) - 1:  # There are data rows
+                # Get column indices for comparison
+                header_row = existing[header_idx]
+                addr_idx = header_row.index("Address") if "Address" in header_row else -1
+                def_idx = header_row.index("Defendant") if "Defendant" in header_row else -1
+                date_idx = header_row.index("Sales Date") if "Sales Date" in header_row else -1
+                
+                # Extract existing data for comparison (skip snapshot and header rows)
+                for row in existing[header_idx+1:]:
+                    if len(row) > max(addr_idx, def_idx, date_idx) and all([row[addr_idx], row[def_idx], row[date_idx]]):
+                        existing_data.append((row[addr_idx], row[def_idx], row[date_idx]))
 
-        # Skip snapshot + header rows
-        start_idx = 2 if existing_data and len(existing_data) > 2 and "snapshot" in existing_data[0][0].lower() else 0
-        if len(existing_data) > start_idx + 1:
-            header = existing_data[start_idx]
-
-            def safe_index(col_name):
-                try:
-                    return header.index(col_name)
-                except ValueError:
-                    return -1
-
-            addr_idx = safe_index("Address")
-            def_idx = safe_index("Defendant")
-            date_idx = safe_index("Sales Date")
-
-            for row in existing_data[start_idx + 1:]:
-                addr = row[addr_idx] if addr_idx >= 0 and addr_idx < len(row) else ""
-                defendant = row[def_idx] if def_idx >= 0 and def_idx < len(row) else ""
-                date = row[date_idx] if date_idx >= 0 and date_idx < len(row) else ""
-                if addr or defendant or date:
-                    key = (addr, defendant, date)
-                    existing_records.add(key)
-
-        # Mark new vs existing
+        # Mark records as new or not
+        data_rows = []
         for row in county_rows:
+            # Check if this record exists in previous data
             key = (row["Address"], row["Defendant"], row["Sales Date"])
-            if key in existing_records:
-                row["New Record"] = "No"
+            is_new = key not in existing_data
+            row_data = [row.get(c, "") for c in cols[:-1]]  # All columns except "New Record"
+            row_data.append("Yes" if is_new else "No")  # Add "New Record" flag
+            data_rows.append(row_data)
 
-        data_rows = [[row.get(c, "") for c in cols] for row in county_rows]
         header = cols
 
-        # After fetching new county rows
-        existing = sheets.get_values(tab, "A:Z")
-        header_idx = sheets.detect_header_row_index(existing)
-        existing_data = {
-            (r[1], r[2], r[3])  # Assuming Address, Defendant, Sales Date are at index 1, 2, 3
-            for r in existing[header_idx + 1:] if r  # Skip header rows
-        }
-
-        data_rows = [[row.get(c, "") for c in cols] for row in county_rows]
-        new_rows = []
-        for row in data_rows:
-            # Check if the Address, Defendant, and Sales Date are already in the existing data
-            if (row[1], row[2], row[3]) not in existing_data:  # Check by Address, Defendant, Sales Date
-                new_rows.append(normalize(row, True))  # This is a new record
-            else:
-                new_rows.append(normalize(row, False))  # This is not a new record
-
-        # Write to the sheet
-        sheets.prepend_snapshot(tab, header, new_rows)
+        if not existing or len(existing) <= 2:  # First-time write or only has snapshot and header
+            sheets.overwrite_with_snapshot(tab, header, data_rows)
+            logger.info(f"Created new sheet for {county['county_name']} with {len(data_rows)} rows")
+        else:
+            # Count new rows (with "New Record" = "Yes")
+            new_rows = [row for row in data_rows if row[-1] == "Yes"]
+            sheets.prepend_snapshot(tab, header, new_rows)
             if new_rows:
                 logger.info(f"Updated sheet for {county['county_name']} with {len(new_rows)} new rows")
             else:
@@ -1296,81 +1276,50 @@ def run():
     all_sheet = "All Data"
     sheets.create_sheet_if_missing(all_sheet)
 
-    # Get existing data to compare with
-    existing_all_data = sheets.get_values(all_sheet, "A:Z")
-    existing_all_records = set()
+    # Get existing data for comparison
+    existing_all = sheets.get_values(all_sheet, "A:Z")
+    existing_all_data = []
+    if existing_all and len(existing_all) > 2:  # Has snapshot, header, and at least one data row
+        header_idx = sheets.detect_header_row_index(existing_all)
+        if header_idx < len(existing_all) - 1:  # There are data rows
+            # Get column indices for comparison
+            header_row = existing_all[header_idx]
+            addr_idx = header_row.index("Address") if "Address" in header_row else -1
+            def_idx = header_row.index("Defendant") if "Defendant" in header_row else -1
+            date_idx = header_row.index("Sales Date") if "Sales Date" in header_row else -1
+            county_idx = header_row.index("County") if "County" in header_row else -1
+            
+            # Extract existing data for comparison (skip snapshot and header rows)
+            for row in existing_all[header_idx+1:]:
+                if (len(row) > max(addr_idx, def_idx, date_idx, county_idx) and 
+                    all([row[addr_idx], row[def_idx], row[date_idx], row[county_idx]])):
+                    existing_all_data.append((row[addr_idx], row[def_idx], row[date_idx], row[county_idx]))
 
-    start_idx = 2 if existing_all_data and len(existing_all_data) > 2 and "snapshot" in existing_all_data[0][0].lower() else 0
-    if len(existing_all_data) > start_idx + 1:
-        header = existing_all_data[start_idx]
-
-        def safe_index(col_name):
-            try:
-                return header.index(col_name)
-            except ValueError:
-                return -1
-
-        addr_idx = safe_index("Address")
-        def_idx = safe_index("Defendant")
-        date_idx = safe_index("Sales Date")
-        county_idx = safe_index("County")
-
-        for row in existing_all_data[start_idx + 1:]:
-            addr = row[addr_idx] if addr_idx >= 0 and addr_idx < len(row) else ""
-            defendant = row[def_idx] if def_idx >= 0 and def_idx < len(row) else ""
-            date = row[date_idx] if date_idx >= 0 and date_idx < len(row) else ""
-            county = row[county_idx] if county_idx >= 0 and county_idx < len(row) else ""
-            if addr or defendant or date or county:
-                key = (addr, defendant, date, county)
-                existing_all_records.add(key)
-
-    # Mark records as "No" if previously seen
+    # Mark records as new or not for All Data sheet
+    all_data_rows = []
     for row in standardized:
+        # Check if this record exists in previous data
         key = (row["Address"], row["Defendant"], row["Sales Date"], row["County"])
-        if key in existing_all_records:
-            row["New Record"] = "No"
+        is_new = key not in existing_all_data
+        row_data = [row.get(c, "") for c in all_cols[:-1]]  # All columns except "New Record"
+        row_data.append("Yes" if is_new else "No")  # Add "New Record" flag
+        all_data_rows.append(row_data)
 
-    all_data_rows = [[row.get(c, "") for c in all_cols] for row in standardized]
-    existing = sheets.get_values(all_sheet, "A:Z")
-
-    if not existing or len(existing) <= 1:
+    if not existing_all or len(existing_all) <= 2:  # First-time write or only has snapshot and header
         sheets.overwrite_with_snapshot(all_sheet, all_cols, all_data_rows)
         logger.info(f"Created 'All Data' with {len(all_data_rows)} rows")
     else:
-        # Compare (County, Property ID) to detect new rows
-        header_idx = sheets.detect_header_row_index(existing)
-
-        # Determine County column index from existing header row if possible
-        county_col_idx = 5  # default position in all_cols
-        try:
-            header_row = existing[header_idx]
-            county_col_idx = header_row.index("County")
-        except Exception:
-            pass
-
-        existing_pairs = set()
-        for r in existing[header_idx + 1:]:
-            if not r:
-                continue
-            pid = (r[0] if len(r) > 0 else "").strip()
-            cty = (r[county_col_idx] if len(r) > county_col_idx else "").strip()
-            if pid and cty:
-                existing_pairs.add((cty, pid))
-
-        new_rows = []
-        for r in all_data_rows:
-            pid = (r[0] if len(r) > 0 else "").strip()
-            cty = (r[all_cols.index("County")] if len(r) > all_cols.index("County") else "").strip()
-            if pid and cty and (cty, pid) not in existing_pairs:
-                new_rows.append(r)
-
+        # Count new rows (with "New Record" = "Yes")
+        new_rows = [row for row in all_data_rows if row[-1] == "Yes"]
         sheets.prepend_snapshot(all_sheet, all_cols, new_rows)
         if new_rows:
             logger.info(f"Updated 'All Data' with {len(new_rows)} new rows")
         else:
             logger.info("No new rows for 'All Data'. Snapshot row added.")
 
+    # -----------------------------
     # Summary Sheet
+    # -----------------------------
     summary_sheet = "Summary"
     sheets.create_sheet_if_missing(summary_sheet)
 
@@ -1379,9 +1328,12 @@ def run():
     for county in TARGET_COUNTIES:
         tab = county["county_name"][:30]
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
-        
+
         total_count = len(county_rows)
-        new_count = sum(1 for r in county_rows if r.get("New Record") == "Yes")
+
+        # Count new rows by checking the "New Record" column in the data we just processed
+        new_count = sum(1 for row in all_data_rows 
+                       if row[all_cols.index("County")] == county["county_name"] and row[-1] == "Yes")
 
         summary_rows.append([
             county["county_name"],
@@ -1389,6 +1341,7 @@ def run():
             str(new_count),
             now_et().strftime("%Y-%m-%d %H:%M %Z")
         ])
+
     # Overwrite summary each run
     sheets.clear(summary_sheet, "A:Z")
     sheets.write_values(summary_sheet, summary_rows, "A1")

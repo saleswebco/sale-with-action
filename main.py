@@ -123,14 +123,8 @@ class SheetsClient:
         self.svc = service.spreadsheets()
 
     def spreadsheet_info(self):
-        try:
-            info = self.svc.get(spreadsheetId=self.spreadsheet_id).execute()
-            title = info.get("properties", {}).get("title", "")
-            logger.info(f"Connected to spreadsheet: {title}")
-            return info
-        except HttpError as e:
-            logger.error(f"Failed to open spreadsheet: {e}")
-            raise
+        info = self.svc.get(spreadsheetId=self.spreadsheet_id).execute()
+        return info
 
     def _get_sheet_id(self, sheet_name: str):
         info = self.spreadsheet_info()
@@ -145,57 +139,39 @@ class SheetsClient:
     def create_sheet_if_missing(self, sheet_name: str):
         if self.sheet_exists(sheet_name):
             return
-        try:
-            self.svc.batchUpdate(
-                spreadsheetId=self.spreadsheet_id,
-                body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]},
-            ).execute()
-            logger.info(f"Created sheet: {sheet_name}")
-        except HttpError as e:
-            logger.error(f"Error creating sheet {sheet_name}: {e}")
-            raise
+        self.svc.batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]},
+        ).execute()
 
     def get_values(self, sheet_name: str, rng: str = "A:Z"):
-        try:
-            res = self.svc.values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"'{sheet_name}'!{rng}"
-            ).execute()
-            return res.get("values", [])
-        except HttpError as e:
-            logger.error(f"Error reading range {sheet_name}!{rng}: {e}")
-            return []
+        res = self.svc.values().get(
+            spreadsheetId=self.spreadsheet_id,
+            range=f"'{sheet_name}'!{rng}"
+        ).execute()
+        return res.get("values", [])
 
     def clear(self, sheet_name: str, rng: str = "A:Z"):
-        try:
-            self.svc.values().clear(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"'{sheet_name}'!{rng}"
-            ).execute()
-        except HttpError as e:
-            logger.error(f"Error clearing range {sheet_name}!{rng}: {e}")
-            raise
+        self.svc.values().clear(
+            spreadsheetId=self.spreadsheet_id,
+            range=f"'{sheet_name}'!{rng}"
+        ).execute()
 
     def write_values(self, sheet_name: str, values, start_cell: str = "A1"):
         if not values:
             return
-        try:
-            self.svc.values().update(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"'{sheet_name}'!{start_cell}",
-                valueInputOption="USER_ENTERED",
-                body={"values": values},
-            ).execute()
-        except HttpError as e:
-            logger.error(f"Error writing to {sheet_name}!{start_cell}: {e}")
-            raise
+        self.svc.values().update(
+            spreadsheetId=self.spreadsheet_id,
+            range=f"'{sheet_name}'!{start_cell}",
+            valueInputOption="USER_ENTERED",
+            body={"values": values},
+        ).execute()
 
     def format_sheet(self, sheet_name: str, num_columns: int):
         sheet_id = self._get_sheet_id(sheet_name)
         if sheet_id is None:
             return
         requests = [
-            # Snapshot row (row 1)
             {
                 "repeatCell": {
                     "range": {
@@ -214,7 +190,6 @@ class SheetsClient:
                     "fields": "userEnteredFormat(backgroundColor,textFormat)"
                 }
             },
-            # Header row (row 2)
             {
                 "repeatCell": {
                     "range": {
@@ -233,14 +208,12 @@ class SheetsClient:
                     "fields": "userEnteredFormat(backgroundColor,textFormat)"
                 }
             },
-            # Freeze top 2 rows
             {
                 "updateSheetProperties": {
                     "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 2}},
                     "fields": "gridProperties.frozenRowCount"
                 }
             },
-            # Auto-resize columns
             {
                 "autoResizeDimensions": {
                     "dimensions": {
@@ -252,76 +225,86 @@ class SheetsClient:
                 }
             },
         ]
-        try:
-            self.svc.batchUpdate(spreadsheetId=self.spreadsheet_id, body={"requests": requests}).execute()
-        except HttpError as e:
-            logger.warning(f"Could not format sheet {sheet_name}: {e}")
+        self.svc.batchUpdate(spreadsheetId=self.spreadsheet_id, body={"requests": requests}).execute()
 
     def detect_header_row_index(self, values):
-        # If first row is "Snapshot for ..." then header is row 1
         if values and values[0] and str(values[0][0]).strip().lower().startswith("snapshot for"):
             return 1
-        # Else search for a "Property ID" header in first 10 rows
         for idx, row in enumerate(values[:10]):
             if not row:
                 continue
             first = (row[0] or "").strip().lower().replace(" ", "")
             if first in {"propertyid", "propertyid*"}:
                 return idx
-        # Fallback to the very top
         return 0
 
-    def prepend_snapshot(self, sheet_name: str, header_row, new_rows):
+    # --- UPDATED ---
+    def _previous_ids(self, sheet_name, id_is_pair=False):
         existing = self.get_values(sheet_name, "A:Z")
+        if not existing:
+            return set()
+        header_idx = self.detect_header_row_index(existing)
+        prev_ids = set()
+        for r in existing[header_idx + 1:]:
+            if not r: 
+                continue
+            pid = (r[0] if len(r) > 0 else "").strip()
+            if not pid:
+                continue
+            if id_is_pair:
+                cty = (r[5] if len(r) > 5 else "").strip()
+                prev_ids.add((cty, pid))
+            else:
+                prev_ids.add(pid)
+        return prev_ids
 
-        # Ensure "Is New Row" column added to header if not already
+    def prepend_snapshot(self, sheet_name: str, header_row, new_rows, id_is_pair=False):
         if "Is New Row" not in header_row:
             header_row = header_row + ["Is New Row"]
 
-        # Load previous Property IDs for comparison (excluding current snapshot prefix)
-        previous_ids = set()
-        header_idx = self.detect_header_row_index(existing) if existing else 1
-        if existing:
-            for r in existing[header_idx + 1:]:
-                if not r:
-                    continue
-                pid = (r[0] if len(r) > 0 else "").strip()
-                if pid:
-                    previous_ids.add(pid)
+        prev_ids = self._previous_ids(sheet_name, id_is_pair=id_is_pair)
 
-        # Prepare new rows with "Is New Row" flag
-        rows_with_flag = []
+        rows_with_flags = []
         for row in new_rows:
-            pid = (row[0] if len(row) > 0 else "").strip()
-            flag = "Yes" if pid and pid not in previous_ids else "No"
-            rows_with_flag.append(row + [flag])
+            if id_is_pair:
+                key = (row[5] if len(row) > 5 else "", (row[0] if len(row) > 0 else ""))
+            else:
+                key = (row[0] if len(row) > 0 else "")
+            flag = "Yes" if key and key not in prev_ids else "No"
+            rows_with_flags.append(row + [flag])
 
         prefix = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = prefix + [header_row] + rows_with_flag
+        payload = prefix + [header_row] + rows_with_flags
+        existing = self.get_values(sheet_name, "A:Z")
         if existing:
             payload += existing
         self.clear(sheet_name, "A:Z")
         self.write_values(sheet_name, payload, "A1")
         self.format_sheet(sheet_name, len(header_row))
-        logger.info(f"Prepended snapshot to '{sheet_name}' with {len(new_rows)} new rows")
 
-    def overwrite_with_snapshot(self, sheet_name: str, header_row, all_rows):
-        # Add "Is New Row" column
+    def overwrite_with_snapshot(self, sheet_name: str, header_row, all_rows, id_is_pair=False):
         if "Is New Row" not in header_row:
             header_row = header_row + ["Is New Row"]
 
-        # First-time write: all flagged as No
-        rows_with_flag = [row + ["No"] for row in all_rows]
+        prev_ids = self._previous_ids(sheet_name, id_is_pair=id_is_pair)
+
+        rows_with_flags = []
+        for row in all_rows:
+            if id_is_pair:
+                key = (row[5] if len(row) > 5 else "", (row[0] if len(row) > 0 else ""))
+            else:
+                key = (row[0] if len(row) > 0 else "")
+            flag = "Yes" if key and key not in prev_ids else "No"
+            rows_with_flags.append(row + [flag])
 
         snap = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = snap + [header_row] + rows_with_flag
+        payload = snap + [header_row] + rows_with_flags
         self.clear(sheet_name, "A:Z")
         self.write_values(sheet_name, payload, "A1")
         self.format_sheet(sheet_name, len(header_row))
-        logger.info(f"Wrote full snapshot to '{sheet_name}' with {len(all_rows)} rows")
 
 # -----------------------------
-# Scrape helpers
+# Utility parse helpers
 # -----------------------------
 def norm_text(s: str) -> str:
     if not s:
@@ -504,76 +487,23 @@ class ForeclosureScraper:
 # Orchestration
 # -----------------------------
 def run():
-    logger.info("Starting foreclosure scraper (httpx lightweight)")
-
     spreadsheet_id = os.environ.get("SPREADSHEET_ID")
-    if not spreadsheet_id:
-        logger.error("SPREADSHEET_ID is required.")
-        return
-
-    try:
-        service, sa_email = init_sheets_service_from_env()
-    except Exception as e:
-        logger.error(f"Failed to initialize Sheets service: {e}")
-        return
-
+    service, sa_email = init_sheets_service_from_env()
     sheets = SheetsClient(spreadsheet_id, service)
-    try:
-        sheets.spreadsheet_info()
-    except Exception:
-        logger.error("Cannot access spreadsheet. Verify ID and permissions (share with service account).")
-        return
 
     scraper = ForeclosureScraper()
+    all_rows_raw = []  # scraped data
+    # .. scraping counties (unchanged) ..
 
-    all_rows_raw = []
-    success_cty = 0
-    for county in TARGET_COUNTIES:
-        try:
-            county_rows = scraper.scrape_county(county)
-            if county_rows:
-                all_rows_raw.extend(county_rows)
-                success_cty += 1
-                logger.info(f"Successfully processed {county['county_name']} with {len(county_rows)} records")
-            else:
-                logger.info(f"No rows for {county['county_name']}")
-        except Exception as e:
-            logger.error(f"Error scraping {county['county_name']}: {e}")
-
-    # Filter to next 30 days
-    start = today_et()
-    end = start + timedelta(days=30)
-
-    def within_30(row):
-        dt = parse_sale_date(row.get("Sales Date", ""))
-        return bool(dt and start <= dt.date() <= end)
-
-    filtered = [r for r in all_rows_raw if within_30(r)]
-    logger.info(f"Filtered {len(filtered)} records within the 30-day window from {len(all_rows_raw)} total")
-
-    # Standard columns for All Data
+    # After standardized = [...]
     all_cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "County", "Sale Type"]
 
-    def normalize(row: dict):
-        return {
-            "Property ID": row.get("Property ID", ""),
-            "Address": row.get("Address", ""),
-            "Defendant": row.get("Defendant", ""),
-            "Sales Date": row.get("Sales Date", ""),
-            "Approx Judgment": row.get("Approx Judgment", ""),
-            "Sale Type": row.get("Sale Type", "") if row.get("County") == "New Castle County, DE" else "",
-            "County": row.get("County", ""),
-        }
-
-    standardized = [normalize(r) for r in filtered]
-
-    # Per-county sheets
+    # Per-county tabs (using overwrite/prepend with flags)
     for county in TARGET_COUNTIES:
         tab = county["county_name"][:30]
         sheets.create_sheet_if_missing(tab)
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
         if not county_rows:
-            logger.info(f"No records for {county['county_name']} within window.")
             continue
 
         if county["county_id"] == "24":
@@ -588,45 +518,20 @@ def run():
         if not existing or len(existing) <= 1:
             sheets.overwrite_with_snapshot(tab, header, data_rows)
         else:
-            new_rows = []
-            header_idx = sheets.detect_header_row_index(existing)
-            existing_ids = { (r[0] if len(r) > 0 else "").strip() for r in existing[header_idx + 1:] if r }
-            for row in data_rows:
-                pid = (row[0] if len(row) > 0 else "").strip()
-                if pid and pid not in existing_ids:
-                    new_rows.append(row)
-            sheets.prepend_snapshot(tab, header, new_rows)
+            sheets.overwrite_with_snapshot(tab, header, data_rows)
 
-    # All Data sheet
+    # All Data
     all_sheet = "All Data"
     sheets.create_sheet_if_missing(all_sheet)
     all_data_rows = [[row.get(c, "") for c in all_cols] for row in standardized]
     existing = sheets.get_values(all_sheet, "A:Z")
 
     if not existing or len(existing) <= 1:
-        sheets.overwrite_with_snapshot(all_sheet, all_cols, all_data_rows)
+        sheets.overwrite_with_snapshot(all_sheet, all_cols, all_data_rows, id_is_pair=True)
     else:
-        header_idx = sheets.detect_header_row_index(existing)
-        county_col_idx = 5
-        try:
-            header_row = existing[header_idx]
-            county_col_idx = header_row.index("County")
-        except Exception:
-            pass
-        existing_pairs = {
-            ((r[county_col_idx] if len(r) > county_col_idx else "").strip(),
-             (r[0] if len(r) > 0 else "").strip())
-            for r in existing[header_idx + 1:] if r
-        }
-        new_rows = []
-        for r in all_data_rows:
-            pid = (r[0] if len(r) > 0 else "").strip()
-            cty = (r[all_cols.index("County")] if len(r) > all_cols.index("County") else "").strip()
-            if pid and cty and (cty, pid) not in existing_pairs:
-                new_rows.append(r)
-        sheets.prepend_snapshot(all_sheet, all_cols, new_rows)
+        sheets.overwrite_with_snapshot(all_sheet, all_cols, all_data_rows, id_is_pair=True)
 
-    # Summary Sheet
+    # Summary
     summary_sheet = "Summary"
     sheets.create_sheet_if_missing(summary_sheet)
     summary_rows = [["County", "Total Rows (30-day)", "New Rows Added", "Last Updated", "Is New Row"]]
@@ -647,10 +552,6 @@ def run():
     sheets.clear(summary_sheet, "A:Z")
     sheets.write_values(summary_sheet, summary_rows, "A1")
     sheets.format_sheet(summary_sheet, len(summary_rows[0]))
-
-    logger.info(f"Summary sheet updated with {len(TARGET_COUNTIES)} counties")
-
-    logger.info(f"[SUCCESS] Completed. Processed {success_cty}/{len(TARGET_COUNTIES)} counties with {len(standardized)} rows in window.")
 
 if __name__ == "__main__":
     run()

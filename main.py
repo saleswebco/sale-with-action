@@ -131,21 +131,7 @@ class SheetsClient:
         except HttpError as e:
             logger.error(f"Failed to open spreadsheet: {e}")
             raise
-    def _build_key(self, row: list, header: list, county_specific: bool = False):
-        """
-        Build uniqueness key excluding Property ID, based on Address, Defendant, Sales Date, Approx Judgment.
-        For All Data, also include County.
-        """
-        try:
-            addr = row[header.index("Address")] if "Address" in header else ""
-            defn = row[header.index("Defendant")] if "Defendant" in header else ""
-            sdate = row[header.index("Sales Date")] if "Sales Date" in header else ""
-            aj = row[header.index("Approx Judgment")] if "Approx Judgment" in header else ""
-            county = row[header.index("County")] if not county_specific and "County" in header else ""
-            return (addr.strip(), defn.strip(), sdate.strip(), aj.strip(), county.strip())
-        except Exception:
-            return tuple(row)   
-                     
+
     def _get_sheet_id(self, sheet_name: str):
         info = self.spreadsheet_info()
         for s in info.get("sheets", []):
@@ -288,80 +274,80 @@ class SheetsClient:
     def prepend_snapshot(self, sheet_name: str, header_row, new_rows):
         existing = self.get_values(sheet_name, "A:Z")
 
-        # detect header from last snapshot
-        header_idx = self.detect_header_row_index(existing)
-        last_header = existing[header_idx] if existing and header_idx < len(existing) else []
+        # --- detect last snapshot's dataset (for Is New Row flagging) ---
+        prev_keys = set()
+        if existing:
+            hdr_idx = self.detect_header_row_index(existing)
+            prev_dataset = existing[hdr_idx + 1:]
+            # Build signature per row (ignoring Property ID, using other main columns)
+            for r in prev_dataset:
+                if not r:
+                    continue
+                address = (r[1] if len(r) > 1 else "").strip().lower()
+                defendant = (r[2] if len(r) > 2 else "").strip().lower()
+                sale_date = (r[3] if len(r) > 3 else "").strip().lower()
+                judgment = (r[4] if len(r) > 4 else "").strip().lower()
+                prev_keys.add((address, defendant, sale_date, judgment))
 
-        # collect keys from last snapshot rows
-        old_keys = set()
-        for r in existing[header_idx + 1:]:
-            if r:
-                k = self._build_key(r, last_header, county_specific=("County" not in header_row))
-                old_keys.add(k)
+        # extend header with Is New Row
+        header = header_row + ["Is New Row"]
 
-        # Extend header
-        header_with_flag = header_row + ["Is New Row"]
+        # mark each row as Yes/No
+        flagged_rows = []
+        for row in new_rows:
+            address = (row[1] if len(row) > 1 else "").strip().lower()
+            defendant = (row[2] if len(row) > 2 else "").strip().lower()
+            sale_date = (row[3] if len(row) > 3 else "").strip().lower()
+            judgment = (row[4] if len(row) > 4 else "").strip().lower()
+            key = (address, defendant, sale_date, judgment)
+            is_new = "No" if key in prev_keys else "Yes"
+            flagged_rows.append(row + [is_new])
 
-        # mark each new row
-        flagged = []
-        for r in new_rows:
-            k = self._build_key(r, header_row, county_specific=("County" not in header_row))
-            flagged.append(r + (["Yes"] if k not in old_keys else ["No"]))
-
-        # build snapshot payload
         prefix = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = prefix + [header_with_flag] + flagged
+        payload = prefix + [header] + flagged_rows
         if existing:
             payload += existing
-
         self.clear(sheet_name, "A:Z")
         self.write_values(sheet_name, payload, "A1")
-        self.format_sheet(sheet_name, len(header_with_flag))
-        logger.info(f"Prepended snapshot to '{sheet_name}' with {len(new_rows) if new_rows else 0} new rows (flagged)")
-
+        self.format_sheet(sheet_name, len(header))
+        logger.info(f"Prepended snapshot to '{sheet_name}' with {len(new_rows) if new_rows else 0} new rows")
 
     def overwrite_with_snapshot(self, sheet_name: str, header_row, all_rows):
-        header_with_flag = header_row + ["Is New Row"]
+        # --- detect prior dataset for Is New Row ---
+        existing = self.get_values(sheet_name, "A:Z")
+        prev_keys = set()
+        if existing:
+            hdr_idx = self.detect_header_row_index(existing)
+            prev_dataset = existing[hdr_idx + 1:]
+            for r in prev_dataset:
+                if not r:
+                    continue
+                address = (r[1] if len(r) > 1 else "").strip().lower()
+                defendant = (r[2] if len(r) > 2 else "").strip().lower()
+                sale_date = (r[3] if len(r) > 3 else "").strip().lower()
+                judgment = (r[4] if len(r) > 4 else "").strip().lower()
+                prev_keys.add((address, defendant, sale_date, judgment))
 
-        # all rows are first snapshot → all "Yes"
-        flagged = [r + ["Yes"] for r in all_rows]
+        # extend header
+        header = header_row + ["Is New Row"]
+
+        # apply Yes/No flags
+        flagged_rows = []
+        for row in all_rows:
+            address = (row[1] if len(row) > 1 else "").strip().lower()
+            defendant = (row[2] if len(row) > 2 else "").strip().lower()
+            sale_date = (row[3] if len(row) > 3 else "").strip().lower()
+            judgment = (row[4] if len(row) > 4 else "").strip().lower()
+            key = (address, defendant, sale_date, judgment)
+            is_new = "No" if key in prev_keys else "Yes"
+            flagged_rows.append(row + [is_new])
 
         snap = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = snap + [header_with_flag] + flagged
-
+        payload = snap + [header] + flagged_rows
         self.clear(sheet_name, "A:Z")
         self.write_values(sheet_name, payload, "A1")
-        self.format_sheet(sheet_name, len(header_with_flag))
-        logger.info(f"Wrote full snapshot to '{sheet_name}' with {len(all_rows)} rows (all flagged Yes)")
-
-    
-    def count_new_vs_old(self, sheet_name: str):
-        """Return (yes_count, no_count) for a snapshot sheet."""
-        vals = self.get_values(sheet_name, "A:Z")
-        if not vals:
-            return (0, 0)
-
-        header_idx = self.detect_header_row_index(vals)
-        if header_idx is None or header_idx >= len(vals):
-            return (0, 0)
-
-        header = vals[header_idx]
-        if "Is New Row" not in header:
-            return (0, 0)
-
-        col_idx = header.index("Is New Row")
-        yes_count = 0
-        no_count = 0
-
-        for r in vals[header_idx + 1:]:
-            if len(r) > col_idx:
-                if r[col_idx].strip().lower() == "yes":
-                    yes_count += 1
-                elif r[col_idx].strip().lower() == "no":
-                    no_count += 1
-
-        return (yes_count, no_count)
-
+        self.format_sheet(sheet_name, len(header))
+        logger.info(f"Wrote full snapshot to '{sheet_name}' with {len(all_rows)} rows")
 
 # -----------------------------
 # Scrape helpers
@@ -701,22 +687,32 @@ def run():
     summary_sheet = "Summary"
     sheets.create_sheet_if_missing(summary_sheet)
 
-    # Build header row
-    summary_rows = [["County", "Total Rows (30-day)", "New Rows (Yes)", "Old Rows (No)", "Last Updated"]]
-
+    # Collect summary stats
+    summary_rows = [["County", "Total Rows (30-day)", "New Rows Added", "Last Updated", "Is New Row"]]
     for county in TARGET_COUNTIES:
         tab = county["county_name"][:30]
+        county_rows = [r for r in standardized if r["County"] == county["county_name"]]
 
-        # count rows from snapshot sheet
-        yes_count, no_count = sheets.count_new_vs_old(tab)
-        total_count = yes_count + no_count
+        total_count = len(county_rows)
+
+        # check new rows count (by comparing to existing)
+        existing = sheets.get_values(tab, "A:Z")
+        header_idx = sheets.detect_header_row_index(existing) if existing else 1
+        existing_ids = set()
+        for r in existing[header_idx + 1:]:
+            if not r:
+                continue
+            pid = (r[0] if len(r) > 0 else "").strip()
+            if pid:
+                existing_ids.add(pid)
+        new_count = sum(1 for r in county_rows if r.get("Property ID", "").strip() not in existing_ids)
 
         summary_rows.append([
             county["county_name"],
             str(total_count),
-            str(yes_count),
-            str(no_count),
+            str(new_count),
             now_et().strftime("%Y-%m-%d %H:%M %Z"),
+            "Yes" if new_count > 0 else "No"
         ])
 
     # Overwrite summary each run
@@ -724,9 +720,11 @@ def run():
     sheets.write_values(summary_sheet, summary_rows, "A1")
     sheets.format_sheet(summary_sheet, len(summary_rows[0]))
 
-    logger.info(f"Summary sheet updated with {len(TARGET_COUNTIES)} counties (with Yes/No breakdown)")
+    logger.info(f"Summary sheet updated with {len(TARGET_COUNTIES)} counties")
 
     logger.info(f"[SUCCESS] Completed. Processed {success_cty}/{len(TARGET_COUNTIES)} counties with {len(standardized)} rows in window.")
 
 if __name__ == "__main__":
     run()
+
+

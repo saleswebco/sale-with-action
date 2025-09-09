@@ -256,7 +256,26 @@ class SheetsClient:
             self.svc.batchUpdate(spreadsheetId=self.spreadsheet_id, body={"requests": requests}).execute()
         except HttpError as e:
             logger.warning(f"Could not format sheet {sheet_name}: {e}")
-
+        # -------- New helpers for Is New Row --------
+    def _previous_ids(self, sheet_name: str, id_is_pair=False):
+        existing = self.get_values(sheet_name, "A:Z")
+        if not existing:
+            return set()
+        header_idx = self.detect_header_row_index(existing)
+        prev_ids = set()
+        for r in existing[header_idx + 1:]:
+            if not r:
+                continue
+            pid = (r[0] if len(r) > 0 else "").strip()
+            if not pid:
+                continue
+            if id_is_pair:
+                cty = (r[5] if len(r) > 5 else "").strip()
+                prev_ids.add((cty, pid))
+            else:
+                prev_ids.add(pid)
+        return prev_ids
+    
     def detect_header_row_index(self, values):
         # If first row is "Snapshot for ..." then header is row 1
         if values and values[0] and str(values[0][0]).strip().lower().startswith("snapshot for"):
@@ -271,25 +290,56 @@ class SheetsClient:
         # Fallback to the very top
         return 0
 
-    def prepend_snapshot(self, sheet_name: str, header_row, new_rows):
-        # Always prepend a new snapshot row + header, even if new_rows is empty
-        existing = self.get_values(sheet_name, "A:Z")
-        prefix = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = prefix + [header_row] + (new_rows if new_rows else [])
-        if existing:
-            payload += existing
-        self.clear(sheet_name, "A:Z")
-        self.write_values(sheet_name, payload, "A1")
-        self.format_sheet(sheet_name, len(header_row))
-        logger.info(f"Prepended snapshot to '{sheet_name}' with {len(new_rows) if new_rows else 0} new rows")
+    def prepend_snapshot(self, sheet_name: str, header_row, new_rows, id_is_pair=False):
+            if "Is New Row" not in header_row:
+                header_row = header_row + ["Is New Row"]
 
-    def overwrite_with_snapshot(self, sheet_name: str, header_row, all_rows):
-        snap = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = snap + [header_row] + all_rows
-        self.clear(sheet_name, "A:Z")
-        self.write_values(sheet_name, payload, "A1")
-        self.format_sheet(sheet_name, len(header_row))
-        logger.info(f"Wrote full snapshot to '{sheet_name}' with {len(all_rows)} rows")
+            prev_ids = self._previous_ids(sheet_name, id_is_pair=id_is_pair)
+
+            rows_with_flags = []
+            for row in new_rows:
+                if id_is_pair:
+                    key = ((row[5] if len(row) > 5 else ""), (row[0] if row else ""))
+                else:
+                    key = (row[0] if row else "")
+                flag = "Yes" if key and key not in prev_ids else "No"
+                rows_with_flags.append(row + [flag])
+
+            prefix = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
+            payload = prefix + [header_row] + rows_with_flags
+
+            existing = self.get_values(sheet_name, "A:Z")
+            if existing:
+                payload += existing
+
+            self.clear(sheet_name, "A:Z")
+            self.write_values(sheet_name, payload, "A1")
+            self.format_sheet(sheet_name, len(header_row))
+
+    def overwrite_with_snapshot(self, sheet_name: str, header_row, all_rows, id_is_pair=False):
+            if "Is New Row" not in header_row:
+                header_row = header_row + ["Is New Row"]
+
+            prev_ids = self._previous_ids(sheet_name, id_is_pair=id_is_pair)
+            rows_with_flags = []
+            for row in all_rows:
+                if id_is_pair:
+                    key = ((row[5] if len(row) > 5 else ""), (row[0] if row else ""))
+                else:
+                    key = (row[0] if row else "")
+                flag = "Yes" if key and key not in prev_ids else "No"
+                rows_with_flags.append(row + [flag])
+
+            snap = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
+            payload = snap + [header_row] + rows_with_flags
+
+            existing = self.get_values(sheet_name, "A:Z")
+            if existing:
+                payload += existing
+
+            self.clear(sheet_name, "A:Z")
+            self.write_values(sheet_name, payload, "A1")
+            self.format_sheet(sheet_name, len(header_row))
 
 # -----------------------------
 # Scrape helpers
@@ -630,30 +680,18 @@ def run():
     sheets.create_sheet_if_missing(summary_sheet)
 
     # Collect summary stats
-    summary_rows = [["County", "Total Rows (30-day)", "New Rows Added", "Last Updated"]]
+    summary_rows = [["County", "Total Rows (30-day)", "New Rows Added", "Last Updated", "Is New Row"]]
     for county in TARGET_COUNTIES:
-        tab = county["county_name"][:30]
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
-
         total_count = len(county_rows)
-
-        # check new rows count (by comparing to existing)
-        existing = sheets.get_values(tab, "A:Z")
-        header_idx = sheets.detect_header_row_index(existing) if existing else 1
-        existing_ids = set()
-        for r in existing[header_idx + 1:]:
-            if not r:
-                continue
-            pid = (r[0] if len(r) > 0 else "").strip()
-            if pid:
-                existing_ids.add(pid)
-        new_count = sum(1 for r in county_rows if r.get("Property ID", "").strip() not in existing_ids)
-
+        prev_ids = sheets._previous_ids(county["county_name"][:30])
+        new_count = sum(1 for r in county_rows if r.get("Property ID", "").strip() not in prev_ids)
         summary_rows.append([
             county["county_name"],
             str(total_count),
             str(new_count),
-            now_et().strftime("%Y-%m-%d %H:%M %Z")
+            now_et().strftime("%Y-%m-%d %H:%M %Z"),
+            "Yes" if new_count > 0 else "No"
         ])
 
     # Overwrite summary each run

@@ -493,10 +493,68 @@ def run():
 
     scraper = ForeclosureScraper()
     all_rows_raw = []  # scraped data
-    # .. scraping counties (unchanged) ..
+    logger.info("Starting foreclosure scraper (httpx lightweight)")
 
-    # After standardized = [...]
+    spreadsheet_id = os.environ.get("SPREADSHEET_ID")
+    if not spreadsheet_id:
+        logger.error("SPREADSHEET_ID is required.")
+        return
+
+    try:
+        service, sa_email = init_sheets_service_from_env()
+    except Exception as e:
+        logger.error(f"Failed to initialize Sheets service: {e}")
+        return
+
+    sheets = SheetsClient(spreadsheet_id, service)
+    try:
+        sheets.spreadsheet_info()
+    except Exception:
+        logger.error("Cannot access spreadsheet. Verify ID and permissions (share with service account).")
+        return
+
+    scraper = ForeclosureScraper()
+
+    all_rows_raw = []
+    success_cty = 0
+    for county in TARGET_COUNTIES:
+        try:
+            county_rows = scraper.scrape_county(county)
+            if county_rows:
+                all_rows_raw.extend(county_rows)
+                success_cty += 1
+                logger.info(f"Successfully processed {county['county_name']} with {len(county_rows)} records")
+            else:
+                logger.info(f"No rows for {county['county_name']}")
+        except Exception as e:
+            logger.error(f"Error scraping {county['county_name']}: {e}")
+
+    # Filter to next 30 days
+    start = today_et()
+    end = start + timedelta(days=30)
+
+    def within_30(row):
+        dt = parse_sale_date(row.get("Sales Date", ""))
+        return bool(dt and start <= dt.date() <= end)
+
+    filtered = [r for r in all_rows_raw if within_30(r)]
+    logger.info(f"Filtered {len(filtered)} records within the 30-day window from {len(all_rows_raw)} total")
+
+    # Standard columns for All Data
     all_cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "County", "Sale Type"]
+
+    def normalize(row: dict):
+        return {
+            "Property ID": row.get("Property ID", ""),
+            "Address": row.get("Address", ""),
+            "Defendant": row.get("Defendant", ""),
+            "Sales Date": row.get("Sales Date", ""),
+            "Approx Judgment": row.get("Approx Judgment", ""),
+            "Sale Type": row.get("Sale Type", "") if row.get("County") == "New Castle County, DE" else "",
+            "County": row.get("County", ""),
+        }
+
+    standardized = [normalize(r) for r in filtered]
 
     # Per-county tabs (using overwrite/prepend with flags)
     for county in TARGET_COUNTIES:

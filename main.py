@@ -274,12 +274,11 @@ class SheetsClient:
     def prepend_snapshot(self, sheet_name: str, header_row, new_rows):
         existing = self.get_values(sheet_name, "A:Z")
 
-        # --- detect last snapshot's dataset (for Is New Row flagging) ---
+        # --- collect last snapshot's keys (ignore Property ID) ---
         prev_keys = set()
         if existing:
             hdr_idx = self.detect_header_row_index(existing)
             prev_dataset = existing[hdr_idx + 1:]
-            # Build signature per row (ignoring Property ID, using other main columns)
             for r in prev_dataset:
                 if not r:
                     continue
@@ -289,10 +288,10 @@ class SheetsClient:
                 judgment = (r[4] if len(r) > 4 else "").strip().lower()
                 prev_keys.add((address, defendant, sale_date, judgment))
 
-        # extend header with Is New Row
+        # --- extend header ---
         header = header_row + ["Is New Row"]
 
-        # mark each row as Yes/No
+        # --- flag new rows ---
         flagged_rows = []
         for row in new_rows:
             address = (row[1] if len(row) > 1 else "").strip().lower()
@@ -313,7 +312,6 @@ class SheetsClient:
         logger.info(f"Prepended snapshot to '{sheet_name}' with {len(new_rows) if new_rows else 0} new rows")
 
     def overwrite_with_snapshot(self, sheet_name: str, header_row, all_rows):
-        # --- detect prior dataset for Is New Row ---
         existing = self.get_values(sheet_name, "A:Z")
         prev_keys = set()
         if existing:
@@ -328,10 +326,8 @@ class SheetsClient:
                 judgment = (r[4] if len(r) > 4 else "").strip().lower()
                 prev_keys.add((address, defendant, sale_date, judgment))
 
-        # extend header
         header = header_row + ["Is New Row"]
 
-        # apply Yes/No flags
         flagged_rows = []
         for row in all_rows:
             address = (row[1] if len(row) > 1 else "").strip().lower()
@@ -714,7 +710,6 @@ def run():
             now_et().strftime("%Y-%m-%d %H:%M %Z"),
             "Yes" if new_count > 0 else "No"
         ])
-
     # Overwrite summary each run
     sheets.clear(summary_sheet, "A:Z")
     sheets.write_values(summary_sheet, summary_rows, "A1")

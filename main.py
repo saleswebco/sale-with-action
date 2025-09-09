@@ -1234,26 +1234,34 @@ def run():
         else:
             cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "New Record"]
 
-        # Get existing data to compare with
+# Get existing data to compare with
         existing_data = sheets.get_values(tab, "A:Z")
         existing_records = set()
-        
-        # Skip snapshot and header rows
+
+        # Skip snapshot + header rows
         start_idx = 2 if existing_data and len(existing_data) > 2 and "snapshot" in existing_data[0][0].lower() else 0
         if len(existing_data) > start_idx + 1:
             header = existing_data[start_idx]
-            # Find indices of key columns
-            addr_idx = header.index("Address") if "Address" in header else -1
-            def_idx = header.index("Defendant") if "Defendant" in header else -1
-            date_idx = header.index("Sales Date") if "Sales Date" in header else -1
-            
+
+            def safe_index(col_name):
+                try:
+                    return header.index(col_name)
+                except ValueError:
+                    return -1
+
+            addr_idx = safe_index("Address")
+            def_idx = safe_index("Defendant")
+            date_idx = safe_index("Sales Date")
+
             for row in existing_data[start_idx + 1:]:
-                if len(row) > max(addr_idx, def_idx, date_idx):
-                    # Create a unique key based on Address, Defendant, and Sales Date
-                    key = (row[addr_idx], row[def_idx], row[date_idx])
+                addr = row[addr_idx] if addr_idx >= 0 and addr_idx < len(row) else ""
+                defendant = row[def_idx] if def_idx >= 0 and def_idx < len(row) else ""
+                date = row[date_idx] if date_idx >= 0 and date_idx < len(row) else ""
+                if addr or defendant or date:
+                    key = (addr, defendant, date)
                     existing_records.add(key)
 
-        # Mark records as "No" if they exist in previous snapshot
+        # Mark new vs existing
         for row in county_rows:
             key = (row["Address"], row["Defendant"], row["Sales Date"])
             if key in existing_records:
@@ -1293,24 +1301,32 @@ def run():
     # Get existing data to compare with
     existing_all_data = sheets.get_values(all_sheet, "A:Z")
     existing_all_records = set()
-    
-    # Skip snapshot and header rows
+
     start_idx = 2 if existing_all_data and len(existing_all_data) > 2 and "snapshot" in existing_all_data[0][0].lower() else 0
     if len(existing_all_data) > start_idx + 1:
         header = existing_all_data[start_idx]
-        # Find indices of key columns
-        addr_idx = header.index("Address") if "Address" in header else -1
-        def_idx = header.index("Defendant") if "Defendant" in header else -1
-        date_idx = header.index("Sales Date") if "Sales Date" in header else -1
-        county_idx = header.index("County") if "County" in header else -1
-        
+
+        def safe_index(col_name):
+            try:
+                return header.index(col_name)
+            except ValueError:
+                return -1
+
+        addr_idx = safe_index("Address")
+        def_idx = safe_index("Defendant")
+        date_idx = safe_index("Sales Date")
+        county_idx = safe_index("County")
+
         for row in existing_all_data[start_idx + 1:]:
-            if len(row) > max(addr_idx, def_idx, date_idx, county_idx):
-                # Create a unique key based on Address, Defendant, Sales Date, and County
-                key = (row[addr_idx], row[def_idx], row[date_idx], row[county_idx])
+            addr = row[addr_idx] if addr_idx >= 0 and addr_idx < len(row) else ""
+            defendant = row[def_idx] if def_idx >= 0 and def_idx < len(row) else ""
+            date = row[date_idx] if date_idx >= 0 and date_idx < len(row) else ""
+            county = row[county_idx] if county_idx >= 0 and county_idx < len(row) else ""
+            if addr or defendant or date or county:
+                key = (addr, defendant, date, county)
                 existing_all_records.add(key)
 
-    # Mark records as "No" if they exist in previous snapshot
+    # Mark records as "No" if previously seen
     for row in standardized:
         key = (row["Address"], row["Defendant"], row["Sales Date"], row["County"])
         if key in existing_all_records:

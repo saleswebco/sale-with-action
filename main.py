@@ -1205,16 +1205,14 @@ def run():
     # Standard columns for All Data
     all_cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "County", "Sale Type", "New Record"]
 
-    def normalize(row: dict):
+    def normalize(row: dict, is_new: bool = True):
         return {
             "Property ID": row.get("Property ID", ""),
             "Address": row.get("Address", ""),
             "Defendant": row.get("Defendant", ""),
             "Sales Date": row.get("Sales Date", ""),
             "Approx Judgment": row.get("Approx Judgment", ""),
-            "Sale Type": row.get("Sale Type", "") if row.get("County") == "New Castle County, DE" else "",
-            "County": row.get("County", ""),
-            "New Record": "Yes"  # Default to "Yes" for new records
+            "New Record": "Yes" if is_new else "No"  # Add New Record column
         }
 
     standardized = [normalize(r) for r in filtered]
@@ -1270,25 +1268,25 @@ def run():
         data_rows = [[row.get(c, "") for c in cols] for row in county_rows]
         header = cols
 
+        # After fetching new county rows
         existing = sheets.get_values(tab, "A:Z")
-        if not existing or len(existing) <= 1:
-            # first-time write for the tab
-            sheets.overwrite_with_snapshot(tab, header, data_rows)
-            logger.info(f"Created new sheet for {county['county_name']} with {len(data_rows)} rows")
-        else:
-            # Build existing Property ID set from old content (first data column)
-            header_idx = sheets.detect_header_row_index(existing)
+        header_idx = sheets.detect_header_row_index(existing)
+        existing_data = {
+            (r[1], r[2], r[3])  # Assuming Address, Defendant, Sales Date are at index 1, 2, 3
+            for r in existing[header_idx + 1:] if r  # Skip header rows
+        }
 
-            existing_ids = set()
-            for r in existing[header_idx + 1:]:
-                if not r:
-                    continue
-                pid = (r[0] if len(r) > 0 else "").strip()
-                if pid:
-                    existing_ids.add(pid)
+        data_rows = [[row.get(c, "") for c in cols] for row in county_rows]
+        new_rows = []
+        for row in data_rows:
+            # Check if the Address, Defendant, and Sales Date are already in the existing data
+            if (row[1], row[2], row[3]) not in existing_data:  # Check by Address, Defendant, Sales Date
+                new_rows.append(normalize(row, True))  # This is a new record
+            else:
+                new_rows.append(normalize(row, False))  # This is not a new record
 
-            new_rows = [row for row in data_rows if (row[0] or "").strip() not in existing_ids]
-            sheets.prepend_snapshot(tab, header, new_rows)
+        # Write to the sheet
+        sheets.prepend_snapshot(tab, header, new_rows)
             if new_rows:
                 logger.info(f"Updated sheet for {county['county_name']} with {len(new_rows)} new rows")
             else:
@@ -1381,7 +1379,7 @@ def run():
     for county in TARGET_COUNTIES:
         tab = county["county_name"][:30]
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
-
+        
         total_count = len(county_rows)
         new_count = sum(1 for r in county_rows if r.get("New Record") == "Yes")
 
@@ -1391,7 +1389,6 @@ def run():
             str(new_count),
             now_et().strftime("%Y-%m-%d %H:%M %Z")
         ])
-
     # Overwrite summary each run
     sheets.clear(summary_sheet, "A:Z")
     sheets.write_values(summary_sheet, summary_rows, "A1")

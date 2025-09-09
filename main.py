@@ -238,15 +238,15 @@ class SheetsClient:
                 return idx
         return 0
 
-    # --- UPDATED ---
-    def _previous_ids(self, sheet_name, id_is_pair=False):
+    # -------- New helpers for Is New Row --------
+    def _previous_ids(self, sheet_name: str, id_is_pair=False):
         existing = self.get_values(sheet_name, "A:Z")
         if not existing:
             return set()
         header_idx = self.detect_header_row_index(existing)
         prev_ids = set()
         for r in existing[header_idx + 1:]:
-            if not r: 
+            if not r:
                 continue
             pid = (r[0] if len(r) > 0 else "").strip()
             if not pid:
@@ -258,42 +258,17 @@ class SheetsClient:
                 prev_ids.add(pid)
         return prev_ids
 
-    def prepend_snapshot(self, sheet_name: str, header_row, new_rows, id_is_pair=False):
-        if "Is New Row" not in header_row:
-            header_row = header_row + ["Is New Row"]
-
-        prev_ids = self._previous_ids(sheet_name, id_is_pair=id_is_pair)
-
-        rows_with_flags = []
-        for row in new_rows:
-            if id_is_pair:
-                key = (row[5] if len(row) > 5 else "", (row[0] if len(row) > 0 else ""))
-            else:
-                key = (row[0] if len(row) > 0 else "")
-            flag = "Yes" if key and key not in prev_ids else "No"
-            rows_with_flags.append(row + [flag])
-
-        prefix = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = prefix + [header_row] + rows_with_flags
-        existing = self.get_values(sheet_name, "A:Z")
-        if existing:
-            payload += existing
-        self.clear(sheet_name, "A:Z")
-        self.write_values(sheet_name, payload, "A1")
-        self.format_sheet(sheet_name, len(header_row))
-
     def overwrite_with_snapshot(self, sheet_name: str, header_row, all_rows, id_is_pair=False):
         if "Is New Row" not in header_row:
             header_row = header_row + ["Is New Row"]
 
         prev_ids = self._previous_ids(sheet_name, id_is_pair=id_is_pair)
-
         rows_with_flags = []
         for row in all_rows:
             if id_is_pair:
-                key = (row[5] if len(row) > 5 else "", (row[0] if len(row) > 0 else ""))
+                key = ((row[5] if len(row) > 5 else ""), (row[0] if row else ""))
             else:
-                key = (row[0] if len(row) > 0 else "")
+                key = (row[0] if row else "")
             flag = "Yes" if key and key not in prev_ids else "No"
             rows_with_flags.append(row + [flag])
 
@@ -304,7 +279,7 @@ class SheetsClient:
         self.format_sheet(sheet_name, len(header_row))
 
 # -----------------------------
-# Utility parse helpers
+# Scrape helpers
 # -----------------------------
 def norm_text(s: str) -> str:
     if not s:
@@ -357,11 +332,9 @@ class ForeclosureScraper:
     def __init__(self):
         pass
 
-    @retry(
-        stop=stop_after_attempt(MAX_RETRIES),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
-    )
+    @retry(stop=stop_after_attempt(MAX_RETRIES),
+           wait=wait_exponential(multiplier=1, min=2, max=8),
+           retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)))
     def load_search_page(self, client: httpx.Client, county_id: str):
         url = f"{BASE_URL}/Sales/SalesSearch?countyId={county_id}"
         r = client.get(url, timeout=HTTP_TIMEOUT)
@@ -375,11 +348,9 @@ class ForeclosureScraper:
             hidden[field] = node.attributes.get("value", "") if node else ""
         return hidden
 
-    @retry(
-        stop=stop_after_attempt(MAX_RETRIES),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
-    )
+    @retry(stop=stop_after_attempt(MAX_RETRIES),
+           wait=wait_exponential(multiplier=1, min=2, max=8),
+           retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)))
     def post_search(self, client: httpx.Client, county_id: str, hidden: dict):
         url = f"{BASE_URL}/Sales/SalesSearch?countyId={county_id}"
         payload = {
@@ -393,11 +364,9 @@ class ForeclosureScraper:
         r.raise_for_status()
         return HTMLParser(r.text)
 
-    @retry(
-        stop=stop_after_attempt(MAX_RETRIES),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
-    )
+    @retry(stop=stop_after_attempt(MAX_RETRIES),
+           wait=wait_exponential(multiplier=1, min=2, max=8),
+           retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)))
     def fetch_details(self, client: httpx.Client, property_id: str):
         if not property_id:
             return ""
@@ -407,7 +376,6 @@ class ForeclosureScraper:
         return r.text
 
     def extract_rows(self, tree: HTMLParser, county):
-        # Extract headers (best-effort)
         headers = [norm_text(th.text()) for th in tree.css("table thead th")]
         if not headers:
             thead_tr = tree.css_first("table thead tr")
@@ -424,7 +392,6 @@ class ForeclosureScraper:
             link = tr.css_first("td a")
             href = link.attributes.get("href", "") if link else ""
             pid = extract_property_id_from_href(href)
-
             address = ""
             defendant = ""
             sale_date = ""
@@ -435,7 +402,6 @@ class ForeclosureScraper:
                     defendant = cols[i]
                 if "sale" in h and "date" in h and i < len(cols) and not sale_date:
                     sale_date = cols[i]
-
             rows_out.append({
                 "Property ID": pid or "",
                 "Address": address,
@@ -443,22 +409,15 @@ class ForeclosureScraper:
                 "Sales Date": sale_date,
                 "County": county["county_name"],
             })
-
         return rows_out
 
     def scrape_county(self, county):
         client = httpx.Client(follow_redirects=True, timeout=HTTP_TIMEOUT)
         try:
-            logger.info(f"[INFO] Loading search page for {county['county_name']}")
             tree = self.load_search_page(client, county["county_id"])
             hidden = self.get_hidden_inputs(tree)
-
-            logger.info(f"[INFO] Searching {county['county_name']} (all records)")
             results_tree = self.post_search(client, county["county_id"], hidden)
-
             rows = self.extract_rows(results_tree, county)
-
-            # Enrich with details
             enriched = []
             for r in rows:
                 details_html = ""
@@ -473,14 +432,9 @@ class ForeclosureScraper:
                 if county["county_id"] == "24":
                     r["Sale Type"] = sale_type
                 enriched.append(r)
-
-            logger.info(f"  ✓ {len(enriched)} rows found")
             return enriched
         finally:
-            try:
-                client.close()
-            except:
-                pass
+            client.close()
             time.sleep(POLITE_DELAY_SECONDS)
 
 # -----------------------------
@@ -488,61 +442,31 @@ class ForeclosureScraper:
 # -----------------------------
 def run():
     spreadsheet_id = os.environ.get("SPREADSHEET_ID")
-    service, sa_email = init_sheets_service_from_env()
-    sheets = SheetsClient(spreadsheet_id, service)
-
-    scraper = ForeclosureScraper()
-    all_rows_raw = []  # scraped data
-    logger.info("Starting foreclosure scraper (httpx lightweight)")
-
-    spreadsheet_id = os.environ.get("SPREADSHEET_ID")
     if not spreadsheet_id:
         logger.error("SPREADSHEET_ID is required.")
         return
 
-    try:
-        service, sa_email = init_sheets_service_from_env()
-    except Exception as e:
-        logger.error(f"Failed to initialize Sheets service: {e}")
-        return
-
+    service, sa_email = init_sheets_service_from_env()
     sheets = SheetsClient(spreadsheet_id, service)
-    try:
-        sheets.spreadsheet_info()
-    except Exception:
-        logger.error("Cannot access spreadsheet. Verify ID and permissions (share with service account).")
-        return
 
     scraper = ForeclosureScraper()
-
     all_rows_raw = []
-    success_cty = 0
     for county in TARGET_COUNTIES:
         try:
             county_rows = scraper.scrape_county(county)
             if county_rows:
                 all_rows_raw.extend(county_rows)
-                success_cty += 1
-                logger.info(f"Successfully processed {county['county_name']} with {len(county_rows)} records")
-            else:
-                logger.info(f"No rows for {county['county_name']}")
         except Exception as e:
             logger.error(f"Error scraping {county['county_name']}: {e}")
 
-    # Filter to next 30 days
     start = today_et()
     end = start + timedelta(days=30)
-
     def within_30(row):
         dt = parse_sale_date(row.get("Sales Date", ""))
         return bool(dt and start <= dt.date() <= end)
-
     filtered = [r for r in all_rows_raw if within_30(r)]
-    logger.info(f"Filtered {len(filtered)} records within the 30-day window from {len(all_rows_raw)} total")
 
-    # Standard columns for All Data
     all_cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "County", "Sale Type"]
-
     def normalize(row: dict):
         return {
             "Property ID": row.get("Property ID", ""),
@@ -553,41 +477,28 @@ def run():
             "Sale Type": row.get("Sale Type", "") if row.get("County") == "New Castle County, DE" else "",
             "County": row.get("County", ""),
         }
-
     standardized = [normalize(r) for r in filtered]
 
-    # Per-county tabs (using overwrite/prepend with flags)
+    # Per-county sheets
     for county in TARGET_COUNTIES:
         tab = county["county_name"][:30]
         sheets.create_sheet_if_missing(tab)
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
         if not county_rows:
             continue
-
         if county["county_id"] == "24":
             cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "Sale Type"]
         else:
             cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment"]
-
         data_rows = [[row.get(c, "") for c in cols] for row in county_rows]
         header = cols
+        sheets.overwrite_with_snapshot(tab, header, data_rows)
 
-        existing = sheets.get_values(tab, "A:Z")
-        if not existing or len(existing) <= 1:
-            sheets.overwrite_with_snapshot(tab, header, data_rows)
-        else:
-            sheets.overwrite_with_snapshot(tab, header, data_rows)
-
-    # All Data
+    # All Data sheet
     all_sheet = "All Data"
     sheets.create_sheet_if_missing(all_sheet)
     all_data_rows = [[row.get(c, "") for c in all_cols] for row in standardized]
-    existing = sheets.get_values(all_sheet, "A:Z")
-
-    if not existing or len(existing) <= 1:
-        sheets.overwrite_with_snapshot(all_sheet, all_cols, all_data_rows, id_is_pair=True)
-    else:
-        sheets.overwrite_with_snapshot(all_sheet, all_cols, all_data_rows, id_is_pair=True)
+    sheets.overwrite_with_snapshot(all_sheet, all_cols, all_data_rows, id_is_pair=True)
 
     # Summary
     summary_sheet = "Summary"
@@ -596,10 +507,8 @@ def run():
     for county in TARGET_COUNTIES:
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
         total_count = len(county_rows)
-        existing = sheets.get_values(county["county_name"][:30], "A:Z")
-        header_idx = sheets.detect_header_row_index(existing) if existing else 1
-        existing_ids = {(r[0] if len(r) > 0 else "").strip() for r in existing[header_idx + 1:] if r}
-        new_count = sum(1 for r in county_rows if r.get("Property ID", "").strip() not in existing_ids)
+        prev_ids = sheets._previous_ids(county["county_name"][:30])
+        new_count = sum(1 for r in county_rows if r.get("Property ID", "").strip() not in prev_ids)
         summary_rows.append([
             county["county_name"],
             str(total_count),

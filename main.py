@@ -272,20 +272,49 @@ class SheetsClient:
         return 0
 
     def prepend_snapshot(self, sheet_name: str, header_row, new_rows):
-        # Always prepend a new snapshot row + header, even if new_rows is empty
         existing = self.get_values(sheet_name, "A:Z")
+
+        # Ensure "Is New Row" column added to header if not already
+        if "Is New Row" not in header_row:
+            header_row = header_row + ["Is New Row"]
+
+        # Load previous Property IDs for comparison (excluding current snapshot prefix)
+        previous_ids = set()
+        header_idx = self.detect_header_row_index(existing) if existing else 1
+        if existing:
+            for r in existing[header_idx + 1:]:
+                if not r:
+                    continue
+                pid = (r[0] if len(r) > 0 else "").strip()
+                if pid:
+                    previous_ids.add(pid)
+
+        # Prepare new rows with "Is New Row" flag
+        rows_with_flag = []
+        for row in new_rows:
+            pid = (row[0] if len(row) > 0 else "").strip()
+            flag = "Yes" if pid and pid not in previous_ids else "No"
+            rows_with_flag.append(row + [flag])
+
         prefix = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = prefix + [header_row] + (new_rows if new_rows else [])
+        payload = prefix + [header_row] + rows_with_flag
         if existing:
             payload += existing
         self.clear(sheet_name, "A:Z")
         self.write_values(sheet_name, payload, "A1")
         self.format_sheet(sheet_name, len(header_row))
-        logger.info(f"Prepended snapshot to '{sheet_name}' with {len(new_rows) if new_rows else 0} new rows")
+        logger.info(f"Prepended snapshot to '{sheet_name}' with {len(new_rows)} new rows")
 
     def overwrite_with_snapshot(self, sheet_name: str, header_row, all_rows):
+        # Add "Is New Row" column
+        if "Is New Row" not in header_row:
+            header_row = header_row + ["Is New Row"]
+
+        # First-time write: all flagged as No
+        rows_with_flag = [row + ["No"] for row in all_rows]
+
         snap = [[f"Snapshot for {now_et().strftime('%A - %Y-%m-%d %H:%M %Z')}"]]
-        payload = snap + [header_row] + all_rows
+        payload = snap + [header_row] + rows_with_flag
         self.clear(sheet_name, "A:Z")
         self.write_values(sheet_name, payload, "A1")
         self.format_sheet(sheet_name, len(header_row))
@@ -547,7 +576,6 @@ def run():
             logger.info(f"No records for {county['county_name']} within window.")
             continue
 
-        # Per-county header: exclude County; include Sale Type only for New Castle (24)
         if county["county_id"] == "24":
             cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "Sale Type"]
         else:
@@ -558,105 +586,64 @@ def run():
 
         existing = sheets.get_values(tab, "A:Z")
         if not existing or len(existing) <= 1:
-            # first-time write for the tab
             sheets.overwrite_with_snapshot(tab, header, data_rows)
-            logger.info(f"Created new sheet for {county['county_name']} with {len(data_rows)} rows")
         else:
-            # Build existing Property ID set from old content (first data column)
+            new_rows = []
             header_idx = sheets.detect_header_row_index(existing)
-
-            existing_ids = set()
-            for r in existing[header_idx + 1:]:
-                if not r:
-                    continue
-                pid = (r[0] if len(r) > 0 else "").strip()
-                if pid:
-                    existing_ids.add(pid)
-
-            new_rows = [row for row in data_rows if (row[0] or "").strip() not in existing_ids]
+            existing_ids = { (r[0] if len(r) > 0 else "").strip() for r in existing[header_idx + 1:] if r }
+            for row in data_rows:
+                pid = (row[0] if len(row) > 0 else "").strip()
+                if pid and pid not in existing_ids:
+                    new_rows.append(row)
             sheets.prepend_snapshot(tab, header, new_rows)
-            if new_rows:
-                logger.info(f"Updated sheet for {county['county_name']} with {len(new_rows)} new rows")
-            else:
-                logger.info(f"No new rows for {county['county_name']}. Snapshot row added.")
 
     # All Data sheet
     all_sheet = "All Data"
     sheets.create_sheet_if_missing(all_sheet)
-
     all_data_rows = [[row.get(c, "") for c in all_cols] for row in standardized]
     existing = sheets.get_values(all_sheet, "A:Z")
 
     if not existing or len(existing) <= 1:
         sheets.overwrite_with_snapshot(all_sheet, all_cols, all_data_rows)
-        logger.info(f"Created 'All Data' with {len(all_data_rows)} rows")
     else:
-        # Compare (County, Property ID) to detect new rows
         header_idx = sheets.detect_header_row_index(existing)
-
-        # Determine County column index from existing header row if possible
-        county_col_idx = 5  # default position in all_cols
+        county_col_idx = 5
         try:
             header_row = existing[header_idx]
             county_col_idx = header_row.index("County")
         except Exception:
             pass
-
-        existing_pairs = set()
-        for r in existing[header_idx + 1:]:
-            if not r:
-                continue
-            pid = (r[0] if len(r) > 0 else "").strip()
-            cty = (r[county_col_idx] if len(r) > county_col_idx else "").strip()
-            if pid and cty:
-                existing_pairs.add((cty, pid))
-
+        existing_pairs = {
+            ((r[county_col_idx] if len(r) > county_col_idx else "").strip(),
+             (r[0] if len(r) > 0 else "").strip())
+            for r in existing[header_idx + 1:] if r
+        }
         new_rows = []
         for r in all_data_rows:
             pid = (r[0] if len(r) > 0 else "").strip()
             cty = (r[all_cols.index("County")] if len(r) > all_cols.index("County") else "").strip()
             if pid and cty and (cty, pid) not in existing_pairs:
                 new_rows.append(r)
-
         sheets.prepend_snapshot(all_sheet, all_cols, new_rows)
-        if new_rows:
-            logger.info(f"Updated 'All Data' with {len(new_rows)} new rows")
-        else:
-            logger.info("No new rows for 'All Data'. Snapshot row added.")
-        # -----------------------------
+
     # Summary Sheet
-    # -----------------------------
     summary_sheet = "Summary"
     sheets.create_sheet_if_missing(summary_sheet)
-
-    # Collect summary stats
-    summary_rows = [["County", "Total Rows (30-day)", "New Rows Added", "Last Updated"]]
+    summary_rows = [["County", "Total Rows (30-day)", "New Rows Added", "Last Updated", "Is New Row"]]
     for county in TARGET_COUNTIES:
-        tab = county["county_name"][:30]
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
-
         total_count = len(county_rows)
-
-        # check new rows count (by comparing to existing)
-        existing = sheets.get_values(tab, "A:Z")
+        existing = sheets.get_values(county["county_name"][:30], "A:Z")
         header_idx = sheets.detect_header_row_index(existing) if existing else 1
-        existing_ids = set()
-        for r in existing[header_idx + 1:]:
-            if not r:
-                continue
-            pid = (r[0] if len(r) > 0 else "").strip()
-            if pid:
-                existing_ids.add(pid)
+        existing_ids = {(r[0] if len(r) > 0 else "").strip() for r in existing[header_idx + 1:] if r}
         new_count = sum(1 for r in county_rows if r.get("Property ID", "").strip() not in existing_ids)
-
         summary_rows.append([
             county["county_name"],
             str(total_count),
             str(new_count),
-            now_et().strftime("%Y-%m-%d %H:%M %Z")
+            now_et().strftime("%Y-%m-%d %H:%M %Z"),
+            "Yes" if new_count > 0 else "No"
         ])
-
-    # Overwrite summary each run
     sheets.clear(summary_sheet, "A:Z")
     sheets.write_values(summary_sheet, summary_rows, "A1")
     sheets.format_sheet(summary_sheet, len(summary_rows[0]))

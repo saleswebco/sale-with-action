@@ -557,8 +557,10 @@ def run():
         existing = sheets.get_values(tab, "A:Z")
         header_idx = sheets.detect_header_row_index(existing) if existing else 1
 
+        # collect ALL previously seen IDs from this sheet
         existing_ids = set()
         if existing:
+            header_row = existing[header_idx]
             for r in existing[header_idx + 1:]:
                 if not r:
                     continue
@@ -566,6 +568,7 @@ def run():
                 if pid:
                     existing_ids.add(pid)
 
+        # build new data rows
         data_rows = []
         for row in county_rows:
             pid = row.get("Property ID", "").strip()
@@ -580,6 +583,7 @@ def run():
             sheets.overwrite_with_snapshot(tab, header, data_rows)
             logger.info(f"Created new sheet for {county['county_name']} with {len(data_rows)} rows")
         else:
+            # only prepend rows actually new
             new_rows = [row for row in data_rows if row[-1] == "Yes"]
             sheets.prepend_snapshot(tab, header, new_rows)
             if new_rows:
@@ -596,15 +600,14 @@ def run():
     existing = sheets.get_values(all_sheet, "A:Z")
     header_idx = sheets.detect_header_row_index(existing) if existing else 1
 
+    # collect ALL previously seen (County, PID) pairs
     existing_pairs = set()
     if existing:
-        # Determine County column index
         try:
             header_row = existing[header_idx]
             county_col_idx = header_row.index("County")
         except Exception:
             county_col_idx = 5
-
         for r in existing[header_idx + 1:]:
             if not r:
                 continue
@@ -613,6 +616,7 @@ def run():
             if pid and cty:
                 existing_pairs.add((cty, pid))
 
+    # build new data rows
     all_data_rows = []
     for row in standardized:
         pid = row.get("Property ID", "").strip()
@@ -637,18 +641,25 @@ def run():
     summary_sheet = "Summary"
     sheets.create_sheet_if_missing(summary_sheet)
 
-    summary_rows = [["County", "Total Rows (30-day)", "New Rows (Yes)", "Old Rows (No)", "Last Updated"]]
+    # Columns for Summary
+    summary_cols = [
+        "County",
+        "Total Rows (30-day)",
+        "New Rows (Yes)",
+        "Old Rows (No)",
+        "Last Updated"
+    ]
 
-    for county in TARGET_COUNTIES:
-        tab = county["county_name"][:30]
-        existing = sheets.get_values(tab, "A:Z")
+    summary_rows = [summary_cols]
 
+    # Function to calculate counts from a sheet
+    def compute_counts(sheet_name):
+        existing = sheets.get_values(sheet_name, "A:Z") or []
         total_count, new_count, old_count = 0, 0, 0
 
         if existing and len(existing) > 1:
             header_idx = sheets.detect_header_row_index(existing)
             header_row = existing[header_idx]
-
             try:
                 is_new_col_idx = header_row.index("Is New")
             except ValueError:
@@ -662,10 +673,14 @@ def run():
                     val = r[is_new_col_idx].strip()
                     if val == "Yes":
                         new_count += 1
-                    elif val == "No":
+                    else:
                         old_count += 1
-        else:
-            total_count, new_count, old_count = 0, 0, 0
+        return total_count, new_count, old_count
+
+    # Add per-county rows
+    for county in TARGET_COUNTIES:
+        tab = county["county_name"][:30]
+        total_count, new_count, old_count = compute_counts(tab)
 
         summary_rows.append([
             county["county_name"],
@@ -675,11 +690,22 @@ def run():
             now_et().strftime("%Y-%m-%d %H:%M %Z")
         ])
 
+    # Add All Data row at the bottom
+    total_count, new_count, old_count = compute_counts("All Data")
+    summary_rows.append([
+        "All Data",
+        str(total_count),
+        str(new_count),
+        str(old_count),
+        now_et().strftime("%Y-%m-%d %H:%M %Z")
+    ])
+
+    # Overwrite Summary sheet
     sheets.clear(summary_sheet, "A:Z")
     sheets.write_values(summary_sheet, summary_rows, "A1")
-    sheets.format_sheet(summary_sheet, len(summary_rows[0]))
+    sheets.format_sheet(summary_sheet, len(summary_cols))
 
-    logger.info(f"Summary sheet updated with {len(TARGET_COUNTIES)} counties")
+    logger.info(f"✅ Summary sheet updated for {len(TARGET_COUNTIES)} counties + All Data row")
 
     logger.info(f"[SUCCESS] Completed. Processed {success_cty}/{len(TARGET_COUNTIES)} counties with {len(standardized)} rows in window.")
 

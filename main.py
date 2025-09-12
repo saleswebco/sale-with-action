@@ -549,6 +549,7 @@ def run():
     for county in TARGET_COUNTIES:
         tab = county["county_name"][:30]
         sheets.create_sheet_if_missing(tab)
+
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
         if not county_rows:
             logger.info(f"No records for {county['county_name']} within window.")
@@ -563,29 +564,13 @@ def run():
         data_rows = [[row.get(c, "") for c in cols] for row in county_rows]
         header = cols
 
-        existing = sheets.get_values(tab, "A:Z")
-        if not existing or len(existing) <= 1:
-            # first-time write for the tab
-            sheets.overwrite_with_snapshot(tab, header, data_rows)
-            logger.info(f"Created new sheet for {county['county_name']} with {len(data_rows)} rows")
-        else:
-            # Build existing Property ID set from old content (first data column)
-            header_idx = sheets.detect_header_row_index(existing)
-
-            existing_ids = set()
-            for r in existing[header_idx + 1:]:
-                if not r:
-                    continue
-                pid = (r[0] if len(r) > 0 else "").strip()
-                if pid:
-                    existing_ids.add(pid)
-
-            new_rows = [row for row in data_rows if (row[0] or "").strip() not in existing_ids]
-            sheets.prepend_snapshot(tab, header, new_rows)
-            if new_rows:
-                logger.info(f"Updated sheet for {county['county_name']} with {len(new_rows)} new rows")
-            else:
-                logger.info(f"No new rows for {county['county_name']}. Snapshot row added.")
+        # Always overwrite the sheet with the fresh 30-day snapshot
+        try:
+            sheets.clear(tab, "A:Z")
+            sheets.write_values(tab, [header] + data_rows, "A1")
+            logger.info(f"{county['county_name']}: wrote {len(data_rows)} rows (no deduplication)")
+        except Exception as e:
+            logger.error(f"Failed to update sheet for {county['county_name']}: {e}")
 
     # All Data sheet
     all_sheet = "All Data"

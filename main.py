@@ -517,8 +517,8 @@ def run():
             logger.error(f"Error scraping {county['county_name']}: {e}")
 
     # Use only dates (not datetimes) for comparisons
-    start = today_et().date()
-    end = (today_et() + timedelta(days=30)).date()
+    start = today_et()
+    end = today_et() + timedelta(days=30)
     
     def within_30(row):
         dt = parse_sale_date(row.get("Sales Date", ""))

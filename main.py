@@ -73,9 +73,14 @@ def today_et():
 def parse_sale_date(date_str: str):
     if not date_str:
         return None
-    for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M", "%m/%d/%Y"):
+    for fmt in (
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%Y",          # matches "9/17/2025"
+        "%m/%d/%Y %I:%M%p"   # e.g. "9/17/2025 1:00PM" (no space before AM/PM)
+    ):
         try:
-            return datetime.strptime(date_str, fmt)
+            return datetime.strptime(date_str.strip(), fmt)
         except ValueError:
             continue
     return None
@@ -511,13 +516,15 @@ def run():
         except Exception as e:
             logger.error(f"Error scraping {county['county_name']}: {e}")
 
-    # Filter to next 30 days
-    start = today_et()
-    end = start + timedelta(days=30)
-
+    # Use only dates (not datetimes) for comparisons
+    start = today_et().date()
+    end = (today_et() + timedelta(days=30)).date()
+    
     def within_30(row):
         dt = parse_sale_date(row.get("Sales Date", ""))
-        return bool(dt and start <= dt.date() <= end)
+        if not dt:
+            return False
+        return start <= dt.date() <= end
 
     filtered = [r for r in all_rows_raw if within_30(r)]
     logger.info(f"Filtered {len(filtered)} records within the 30-day window from {len(all_rows_raw)} total")

@@ -549,29 +549,28 @@ def run():
     for county in TARGET_COUNTIES:
         tab = county["county_name"][:30]
         sheets.create_sheet_if_missing(tab)
-
+    
         county_rows = [r for r in standardized if r["County"] == county["county_name"]]
         if not county_rows:
             logger.info(f"No records for {county['county_name']} within window.")
             continue
-
+    
         # Per-county header: exclude County; include Sale Type only for New Castle (24)
         if county["county_id"] == "24":
             cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment", "Sale Type"]
         else:
             cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment"]
-
+    
         data_rows = [[row.get(c, "") for c in cols] for row in county_rows]
         header = cols
-
-        # Always overwrite the sheet with the fresh 30-day snapshot
+    
+        # Prepend new snapshot instead of overwriting
         try:
-            sheets.clear(tab, "A:Z")
-            sheets.write_values(tab, [header] + data_rows, "A1")
-            logger.info(f"{county['county_name']}: wrote {len(data_rows)} rows (no deduplication)")
+            sheets.prepend_snapshot(tab, header, data_rows)
+            logger.info(f"{county['county_name']}: prepended snapshot with {len(data_rows)} rows")
         except Exception as e:
             logger.error(f"Failed to update sheet for {county['county_name']}: {e}")
-
+        
     # All Data sheet
     all_sheet = "All Data"
     sheets.create_sheet_if_missing(all_sheet)

@@ -561,15 +561,37 @@ def run():
         else:
             cols = ["Property ID", "Address", "Defendant", "Sales Date", "Approx Judgment"]
     
-        data_rows = [[row.get(c, "") for c in cols] for row in county_rows]
-        header = cols
+        # Add Status column
+        cols_with_status = cols + ["Status"]
     
-        # Prepend new snapshot instead of overwriting
+        # --- Get previous snapshot data (excluding first two rows: snapshot + header) ---
+        existing = sheets.get_values(tab, "A:Z")
+        prev_records = set()
+        if existing and len(existing) > 2:
+            header_idx = sheets.detect_header_row_index(existing)
+            for r in existing[header_idx + 1:]:
+                if len(r) >= 3:  # ensure Address and Defendant exist
+                    addr = r[cols.index("Address")] if "Address" in cols and len(r) > cols.index("Address") else ""
+                    defn = r[cols.index("Defendant")] if "Defendant" in cols and len(r) > cols.index("Defendant") else ""
+                    if addr and defn:
+                        prev_records.add((addr.strip().lower(), defn.strip().lower()))
+    
+        # --- Build current snapshot with Status column ---
+        data_rows = []
+        for row in county_rows:
+            addr = row.get("Address", "").strip()
+            defn = row.get("Defendant", "").strip()
+            key = (addr.lower(), defn.lower())
+            status = "Old" if key in prev_records else "New"
+            data_rows.append([row.get(c, "") for c in cols] + [status])
+    
+        # Prepend new snapshot
         try:
-            sheets.prepend_snapshot(tab, header, data_rows)
-            logger.info(f"{county['county_name']}: prepended snapshot with {len(data_rows)} rows")
+            sheets.prepend_snapshot(tab, cols_with_status, data_rows)
+            logger.info(f"{county['county_name']}: prepended snapshot with {len(data_rows)} rows (Status marked)")
         except Exception as e:
             logger.error(f"Failed to update sheet for {county['county_name']}: {e}")
+
         
     # All Data sheet
     all_sheet = "All Data"
